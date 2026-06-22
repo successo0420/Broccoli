@@ -1,6 +1,0 @@
-{
-    "python.analysis.extraPaths": [
-        "./video-scheduler",
-        "./video-scheduler"
-    ]
-}
