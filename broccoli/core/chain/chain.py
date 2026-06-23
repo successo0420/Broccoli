@@ -1,11 +1,12 @@
 import json
+import uuid
 from dataclasses import dataclass
 from typing import Optional
 
 
 @dataclass
 class Chain:
-    chain_id: str
+    chain_id: str(default_factory=lambda: str(uuid.uuid4()))
     total_tasks: Optional[int] = None
     completion_task: Optional[str] = None
     status: str = "pending"

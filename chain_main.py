@@ -44,7 +44,7 @@ def chain_finished_task(payload):
     print("we done done")
 
 
-# RedisController().delete_all_keys()  # Clear Redis for a clean test run
+RedisController().delete_all_keys()  # Clear Redis for a clean test run
 # Chain tasks together
 chain = TaskChain()
 chain_id = chain.chain(
@@ -53,7 +53,7 @@ chain_id = chain.chain(
         {"task_type": "multiply", "payload": {"multiplier": 4}},
         {"task_type": "square", "payload": {}},
     ],
-    completion_task="chain_finished",
+    # completion_task="chain_finished",
 )
 
 

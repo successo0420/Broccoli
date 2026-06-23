@@ -23,6 +23,9 @@ class BaseWorker(ABC):
     ):
         self.redis_url = redis_url
         self._redis = RedisController(redis_url).get_client()
+        self.task_prefix = (
+            task_prefix  # Store prefix so _update_task uses the right key
+        )
         self.queue = TaskQueue(
             queue_name=queue_name, redis_url=redis_url, task_prefix=task_prefix
         )
@@ -40,8 +43,14 @@ class BaseWorker(ABC):
 
     def post_process(self, task: Task, success: bool) -> None:
         """Hook to run after processing. Override this in your custom worker."""
+        # Chain tasks are cleaned up in bulk by ChainWorkerMixin — skip storing them here
+        if task.payload.get("__chain_id"):
+            logger.info(
+                f"Task {task.task_id} {task.status} (chain task, skipping result store)"
+            )
+            return
         self.result.store_task(task)
-        self._redis.delete(f"task:{task.task_id}")  # Clean up task data from Redis
+        self._redis.delete(f"{self.task_prefix}:{task.task_id}")
         logger.info(f"Task {task.task_id} {task.status} with result: {task.result}")
 
     def process(self, task: Task) -> bool:
@@ -63,8 +72,11 @@ class BaseWorker(ABC):
             return False
 
     def _update_task(self, task: Task) -> None:
+        # Chain tasks are cleaned up separately — don't re-write them after post_process removed them
+        if task.payload.get("__chain_id"):
+            return
         task.updated_at = datetime.now().isoformat()
-        self._redis.hset(f"task:{task.task_id}", mapping=task.to_dict())
+        self._redis.hset(f"{self.task_prefix}:{task.task_id}", mapping=task.to_dict())
 
     def start(self):
         self.running = True

@@ -6,7 +6,6 @@ from typing import Any, Dict, List
 from xmlrpc.client import Boolean
 
 from broccoli.core.chain.chain import Chain
-from broccoli.core.chain.chain_queue import ChainTaskQueue
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.task.task import Task
 from broccoli.core.task.task_queue import TaskQueue
@@ -87,6 +86,9 @@ class TaskChain:
             },
             max_retries=first_task.get("max_retries", 3),
         )
+        for t in tasks:
+            if "task_id" not in t:
+                t["task_id"] = str(uuid.uuid4())
 
         # Store all task configs for reference
         self._redis.set(
@@ -127,15 +129,14 @@ class TaskChain:
             completion_task = metadata.get("completion_task")
 
             if completion_task:
-                self.queue.push(
-                    Task(
-                        task_type=completion_task,
-                        payload={
-                            "chain_id": chain_id,
-                            "result": previous_result,
-                        },
-                    )
+                task = Task(
+                    task_type=completion_task,
+                    payload={
+                        "chain_id": chain_id,
+                        "result": previous_result,
+                    },
                 )
+                self.queue.push(task)
 
             return True
 

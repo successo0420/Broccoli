@@ -1,3 +1,4 @@
+import json
 import logging
 
 from broccoli.core.chain.chain import Chain
@@ -27,12 +28,30 @@ class ChainWorker(ChainWorkerMixin, BaseWorker):
         chain = Chain.from_dict(self._redis.hgetall(f"chain:{chain_id}"))
         chain.result = final_result
         self.result_backend.store_chain(chain)
-        self._redis.delete(f"chain:{chain_id}")  # Clean up chain data from Redis
-        self._redis.delete(
-            f"chain:{chain_id}:tasks"
-        )  # Clean up chain tasks data from Redis
-
+        self.cleanup(chain_id)
         logger.info(f"Chain {chain_id} finished with final result: {final_result}")
+
+    def cleanup(self, chain_id: str):
+        """Clean up all chain and task keys from Redis, leaving only the stored result."""
+        tasks_raw = self._redis.get(f"chain:{chain_id}:tasks")
+        if not tasks_raw:
+            logger.warning(f"No tasks list found for chain {chain_id} during cleanup")
+            return
+
+        tasks = json.loads(tasks_raw)
+        for task in tasks:
+            task_id = task.get("task_id")
+            if task_id:
+                # Delete both possible key prefixes — chain_mixin deletes chain: during
+                # normal flow, but we also cover task: in case _update_task wrote it,
+                # and catch any stragglers if cleanup runs before mixin does.
+                self._redis.delete(f"chain:{task_id}")
+                self._redis.delete(f"task:{task_id}")
+                logger.info(f"Cleaned up task {task_id}")
+
+        self._redis.delete(f"chain:{chain_id}")
+        self._redis.delete(f"chain:{chain_id}:tasks")
+        logger.info(f"Cleaned up chain {chain_id}")
 
     def on_finish(self, chain_id: str, final_result: any) -> None:
         """Hook called when the entire chain is finished. Override in your worker."""
