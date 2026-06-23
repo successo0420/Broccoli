@@ -3,7 +3,11 @@ import json
 import logging
 import uuid
 from typing import Any, Dict, List
+from xmlrpc.client import Boolean
 
+from broccoli.core.chain import Chain
+from broccoli.core.chain_queue import ChainQueue
+from broccoli.core.redis_controller import RedisController
 from broccoli.core.task import Task
 from broccoli.core.task_queue import TaskQueue
 from broccoli.core.task_registry import TaskRegistry
@@ -14,13 +18,17 @@ logger = logging.getLogger(__name__)
 class TaskChain:
     """Chain multiple tasks together where each task passes its result to the next."""
 
-    def __init__(self, redis_url: str = "redis://localhost:6379"):
-        self.queue = TaskQueue(redis_url)
+    def __init__(self, redis_url: str = "redis://localhost:6379", chain_id: str = None):
+        self.queue = ChainQueue(redis_url)
+        self._redis = RedisController(redis_url).get_client()
         self.registry = TaskRegistry()
-        self.chain_id = str(uuid.uuid4())
+        self.chain_id = chain_id or str(uuid.uuid4())
 
     def chain(
-        self, tasks: List[Dict[str, Any]], shared_payload: Dict[str, Any] = None
+        self,
+        tasks: List[Dict[str, Any]],
+        shared_payload: Dict[str, Any] = None,
+        completion_task: str = None,
     ) -> str:
         """
         Chain tasks together.
@@ -28,6 +36,7 @@ class TaskChain:
         Args:
             tasks: List of task configurations, each with 'task_type' and 'payload'
             shared_payload: Data passed to all tasks in the chain
+            completion_task: Optional task to run after the chain completes
 
         Returns:
             chain_id: ID for tracking the entire chain
@@ -38,31 +47,34 @@ class TaskChain:
                 {"task_type": "download_file", "payload": {"url": "https://..."}},
                 {"task_type": "process_video", "payload": {"quality": "high"}},
                 {"task_type": "upload_file", "payload": {"bucket": "my-bucket"}}
-            ])
+            ], completion_task="on_chain_finished")
         """
         if not tasks:
             raise ValueError("Cannot chain empty task list")
 
         # Store chain metadata
-        chain_metadata = {
-            "chain_id": self.chain_id,
-            "total_tasks": len(tasks),
-            "completed_tasks": 0,
-            "failed": False,
-            "current_task": 0,
-            "status": "pending",
-        }
+        chain = Chain(
+            chain_id=self.chain_id,
+            total_tasks=len(tasks),
+            completed_tasks=0,
+            failed=False,
+            status="pending",
+        )
+
+        if completion_task:
+            chain.completion_task = completion_task
 
         # Save chain metadata to Redis
-        self.queue.redis.hset(
+        self._redis.hset(
             f"chain:{self.chain_id}",
-            mapping={k: str(v) for k, v in chain_metadata.items()},
+            mapping={k: str(v) for k, v in chain.to_dict().items()},
         )
 
         # Create first task with chain info
         first_task = tasks[0]
         task = Task(
             task_type=first_task["task_type"],
+            task_id=first_task.get("task_id", str(uuid.uuid4())),
             payload={
                 **first_task.get("payload", {}),
                 **(shared_payload or {}),
@@ -75,11 +87,13 @@ class TaskChain:
         )
 
         # Store all task configs for reference
-        self.queue.redis.set(
+        self._redis.set(
             ex=86400,  # 24 hours TTL
             name=f"chain:{self.chain_id}:tasks",
             value=json.dumps(tasks),
         )
+
+        print(json.dumps(tasks, indent=4))  # Debugging: print the tasks being chained
 
         # Push first task
         self.queue.push(task)
@@ -87,33 +101,49 @@ class TaskChain:
 
         return self.chain_id
 
-    def continue_chain(self, previous_task: Task, previous_result: Any) -> None:
+    def continue_chain(
+        self, previous_task: Task, previous_result: Any
+    ) -> Boolean | None:
         """
         Continue the chain after a task completes.
         Called by the worker's post_process hook.
         """
         chain_id = previous_task.payload.get("__chain_id")
         if not chain_id:
-            return
+            return None
 
         position = previous_task.payload.get("__chain_position", 0)
         total_tasks = previous_task.payload.get("__total_tasks", 0)
 
         # Update chain progress
-        self.queue.redis.hincrby(f"chain:{chain_id}", "completed_tasks", 1)
-        self.queue.redis.hset(f"chain:{chain_id}", "current_task", position + 1)
+        self._redis.hincrby(f"chain:{chain_id}", "completed_tasks", 1)
+        self._redis.hset(f"chain:{chain_id}", "current_task", position + 1)
 
         # Check if chain is complete
         if position + 1 >= total_tasks:
-            self.queue.redis.hset(f"chain:{chain_id}", "status", "completed")
+            self._redis.hset(f"chain:{chain_id}", "status", "completed")
             logger.info(f"Chain {chain_id} completed successfully")
-            return
+            metadata = self._redis.hgetall(f"chain:{chain_id}")
+            completion_task = metadata.get("completion_task")
+
+            if completion_task:
+                self.queue.push(
+                    Task(
+                        task_type=completion_task,
+                        payload={
+                            "chain_id": chain_id,
+                            "result": previous_result,
+                        },
+                    )
+                )
+
+            return True
 
         # Get next task configuration
-        tasks_json = self.queue.redis.get(f"chain:{chain_id}:tasks")
+        tasks_json = self._redis.get(f"chain:{chain_id}:tasks")
         if not tasks_json:
             logger.error(f"Chain {chain_id} tasks not found")
-            return
+            return None
 
         tasks = json.loads(tasks_json)
         next_task_config = tasks[position + 1]
@@ -140,7 +170,7 @@ class TaskChain:
 
     def get_chain_status(self, chain_id: str) -> Dict[str, Any]:
         """Get the status of a chain."""
-        data = self.queue.redis.hgetall(f"chain:{chain_id}")
+        data = self._redis.hgetall(f"chain:{chain_id}")
         if not data:
             return {"status": "not_found"}
 
@@ -152,19 +182,3 @@ class TaskChain:
             "status": data.get("status", "unknown"),
             "failed": data.get("failed", "False") == "True",
         }
-
-
-class ChainWorkerMixin:
-    """Mixin to add chain support to a worker."""
-
-    def post_process(self, task: Task, success: bool) -> None:
-        """Override this in your worker and call super().post_process()."""
-        # Check if this task is part of a chain
-        chain_id = task.payload.get("__chain_id")
-        if chain_id and success:
-            from broccoli.core.task_chain import TaskChain
-
-            chain = TaskChain()
-            chain.continue_chain(task, task.result)
-
-        # Your existing post_process logic here

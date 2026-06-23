@@ -2,21 +2,22 @@
 import logging
 from typing import Optional
 
+from broccoli.core import result
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.task import Task
 
 logger = logging.getLogger(__name__)
 
 
-class TaskQueue:
+class ChainQueue:
     def __init__(self, redis_url: str = "redis://localhost:6379"):
         self.redis_url = redis_url
         self._redis = RedisController(redis_url).get_client()
-        self.queue_key = "tasks:queue"
+        self.queue_key = "chain:queue"
 
     def push(self, task: Task, priority: int = 0) -> str:
         """Push task with priority (0=highest, higher numbers = lower priority)."""
-        self._redis.hset(f"task:{task.task_id}", mapping=task.to_dict())
+        self._redis.hset(f"chain:{task.task_id}", mapping=task.to_dict())
         # Use sorted set for priority
         self._redis.zadd(self.queue_key, mapping={task.task_id: priority})
         return task.task_id
@@ -35,7 +36,7 @@ class TaskQueue:
 
             _, task_id, priority = result
 
-            task_data = self._redis.hgetall(f"task:{task_id}")
+            task_data = self._redis.hgetall(f"chain:{task_id}")
             if not task_data:
                 continue
 
@@ -54,13 +55,13 @@ class TaskQueue:
                     continue  # Try the next task
 
             # If we get here, task is ready to process
-            self._redis.hset(f"task:{task_id}", "status", "in_progress")
+            self._redis.hset(f"chain:{task_id}", "status", "in_progress")
             task.status = "in_progress"
             return task
 
     def get_task(self, task_id: str) -> Optional[Task]:
         """Get a task by ID."""
-        task_data = self._redis.hgetall(f"task:{task_id}")
+        task_data = self._redis.hgetall(f"chain:{task_id}")
         if not task_data:
             return None
         return Task.from_dict(task_data)
@@ -71,13 +72,13 @@ class TaskQueue:
         if result is None:
             return None
         _, task_id, priority = result
-        task_data = self._redis.hgetall(f"task:{task_id}")
+        task_data = self._redis.hgetall(f"chain:{task_id}")
         if not task_data:
             return None
         decoded_task_data = {
             k.decode("utf-8"): v.decode("utf-8") for k, v in task_data.items()
         }
         task = Task.from_dict(decoded_task_data)
-        self._redis.hset(f"task:{task_id}", "status", "in_progress")
+        self._redis.hset(f"chain:{task_id}", "status", "in_progress")
         task.status = "in_progress"
         return task

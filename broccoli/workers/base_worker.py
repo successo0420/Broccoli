@@ -4,6 +4,7 @@ import time
 from abc import ABC
 from datetime import datetime
 
+from broccoli.core.chain_queue import ChainQueue
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.result import ResultBackend
 from broccoli.core.task import Task
@@ -15,16 +16,19 @@ logger = logging.getLogger(__name__)
 
 class BaseWorker(ABC):
     def __init__(
-        self, redis_url: str = "redis://localhost:6379", worker_id: str = None
+        self,
+        redis_url: str = "redis://localhost:6379",
+        worker_id: str = None,
+        chain: bool = False,
     ):
         self.redis_url = redis_url
-        self.__redis = RedisController(redis_url).get_client()
-        self.queue = TaskQueue(self.redis_url)
+        self._redis = RedisController(redis_url).get_client()
+        self.queue = ChainQueue(redis_url) if chain else TaskQueue(redis_url)
         self.registry = TaskRegistry()
         self.running = False
         self.worker_id = worker_id or f"worker-{id(self)}"
         self.task_timeout = 3600
-        self.result = ResultBackend(self.redis_url)
+        self.result = ResultBackend(redis_url)
 
     def pre_process(self, task: Task) -> bool:
         """Hook to run before processing. Override this in your custom worker."""
@@ -34,8 +38,8 @@ class BaseWorker(ABC):
 
     def post_process(self, task: Task, success: bool) -> None:
         """Hook to run after processing. Override this in your custom worker."""
-        self.result.store(task)
-        # self.__redis.delete(f"task:{task.task_id}")  # Clean up task data from Redis
+        self.result.store_task(task)
+        self._redis.delete(f"task:{task.task_id}")  # Clean up task data from Redis
         logger.info(f"Task {task.task_id} {task.status} with result: {task.result}")
 
     def process(self, task: Task) -> bool:
@@ -53,12 +57,12 @@ class BaseWorker(ABC):
 
         except Exception as e:
             task.error = str(e)
-            logger.error(f"Task {task.task_id} failed: {e}")
+            logger.error(f"Task {task.task_id} failed: {e}", exc_info=True)
             return False
 
     def _update_task(self, task: Task) -> None:
         task.updated_at = datetime.now().isoformat()
-        self.__redis.hset(f"task:{task.task_id}", mapping=task.to_dict())
+        self._redis.hset(f"task:{task.task_id}", mapping=task.to_dict())
 
     def start(self):
         self.running = True
@@ -106,7 +110,9 @@ class BaseWorker(ABC):
                 self._update_task(task)
 
             except Exception as e:
-                logger.error(f"Worker {self.worker_id} encountered error: {e}")
+                logger.error(
+                    f"Worker {self.worker_id} encountered error: {e}", exc_info=True
+                )
                 time.sleep(1)
 
         logger.info(f"Worker {self.worker_id} stopped")

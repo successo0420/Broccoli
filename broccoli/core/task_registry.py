@@ -26,6 +26,11 @@ class TaskRegistry:
 
         return decorator
 
+    def register_manually(self, task_type: str, handler: Callable):
+        """Manually register a task handler."""
+        self._handlers[task_type] = handler
+        logger.info(f"Manually registered handler for task type: {task_type}")
+
     def get_handler(self, task_type: str) -> Optional[Callable]:
         """Get the handler for a task type."""
         return self._handlers.get(task_type)

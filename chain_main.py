@@ -1,6 +1,7 @@
 # test_chain.py
 import logging
 
+from broccoli.core.redis_controller import RedisController
 from broccoli.core.task_chain import TaskChain
 from broccoli.core.task_registry import TaskRegistry
 from broccoli.workers.chain_worker import ChainWorker
@@ -38,6 +39,12 @@ def square_task(payload):
     return result
 
 
+@registry.register("chain_finished")
+def chain_finished_task(payload):
+    print("we done done")
+
+
+RedisController().delete_all_keys()  # Clear Redis for a clean test run
 # Chain tasks together
 chain = TaskChain()
 chain_id = chain.chain(
@@ -45,7 +52,8 @@ chain_id = chain.chain(
         {"task_type": "add", "payload": {"a": 5, "b": 3}},
         {"task_type": "multiply", "payload": {"multiplier": 4}},
         {"task_type": "square", "payload": {}},
-    ]
+    ],
+    completion_task="chain_finished",
 )
 
 print(f"Chain ID: {chain_id}")

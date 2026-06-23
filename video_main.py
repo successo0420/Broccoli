@@ -6,9 +6,8 @@ import time
 import uuid
 from pathlib import Path
 
-from broccoli.core.redis_controller import RedisController
 from broccoli.core.task import Task
-from broccoli.core.task_chain import ChainWorkerMixin, TaskChain
+from broccoli.core.task_chain import TaskChain
 from broccoli.core.task_queue import TaskQueue
 from broccoli.core.task_registry import TaskRegistry
 from broccoli.workers.async_worker import AsyncWorker
@@ -499,14 +498,6 @@ def run_all_tests():
     print("BROCCOLI COMPREHENSIVE TEST SUITE")
     print("=" * 60)
 
-    # Make sure Redis is running
-    try:
-        queue.redis.ping()
-        print("✅ Redis connected")
-    except:
-        print("❌ Redis not running! Start Redis first.")
-        return
-
     test_functions = [
         # test_basic_worker,
         # test_chain_worker,
@@ -518,11 +509,8 @@ def run_all_tests():
     ]
 
     for test_func in test_functions:
-        try:
-            test_func()
-        except Exception as e:
-            print(f"❌ Test failed: {e}")
-        time.sleep(2)
+        test_func()
+        time.sleep(1)  # Short pause between tests
 
     print("\n" + "=" * 60)
     print("ALL TESTS COMPLETED")
@@ -530,5 +518,5 @@ def run_all_tests():
 
 
 if __name__ == "__main__":
-    WorkerPool(worker_type=ThreadedWorker, num_workers=4).start()
-    # run_all_tests()
+    # WorkerPool(worker_type=ThreadedWorker, num_workers=4).start()
+    run_all_tests()

@@ -1,10 +1,8 @@
 # tests/test_workers.py
 import logging
-import random
 import time
 
 from broccoli.core.redis_controller import RedisController
-from broccoli.core.result import ResultBackend
 from broccoli.core.task import Task
 from broccoli.core.task_queue import TaskQueue
 from broccoli.core.task_registry import TaskRegistry
@@ -18,6 +16,7 @@ logging.basicConfig(level=logging.INFO)
 
 # Register tasks
 registry = TaskRegistry()
+tasks = TaskQueue()
 
 
 @registry.register("sleep")
@@ -43,11 +42,10 @@ def print_task(payload):
 
 
 def create_tasks(count=5):
-    tasks = TaskQueue()
     for i in range(count):
         task = Task(task_type="print", payload={"message": f"Hello, World! {i + 1}"})
         tasks.push(task)
-        print(f"Created task {task.task_id} with payload: {task.payload}")
+        # print(f"Created task {task.task_id} with payload: {task.payload}")
     return tasks
 
 
@@ -71,34 +69,37 @@ def test_async_worker():
 
 def test_hybrid_worker():
     worker = HybridWorker(thread_workers=2, async_tasks=3)
-    create_tasks(6)
+    create_tasks(600)
     worker.start()  # Processes with mixed threading/async
 
 
 def test_worker_pool():
-
-    pool = WorkerPool(worker_type=ThreadedWorker, num_workers=3)
-    create_tasks(10)
+    pool = WorkerPool(worker_type=AsyncWorker, num_workers=3)
+    create_tasks(600)
     pool.start()
 
 
 def test_all_workers():
     """Run all worker types sequentially."""
-    print("\n=== Testing BaseWorker ===")
-    test_base_worker()
+    # print("\n=== Testing BaseWorker ===")
+    # test_base_worker()
     # print("\n=== Testing ThreadedWorker ===")
     # test_threaded_worker()
     # print("\n=== Testing AsyncWorker ===")
     # test_async_worker()
-    # print("\n=== Testing WorkerPool ===")
-    # test_worker_pool()
+    print("\n=== Testing WorkerPool ===")
+    test_worker_pool()
     # print("\n=== Testing HybridWorker ===")
     # test_hybrid_worker()
 
 
 if __name__ == "__main__":
     # queue = TaskQueue(redis_url="redis://localhost:6379")
-    # RedisController(
-    #     "redis://localhost:6379"
-    # ).delete_all_keys()  # Clear Redis before testing
-    test_all_workers()
+    RedisController(
+        "redis://localhost:6379"
+    ).delete_all_keys()  # Clear Redis before testing
+    # test_all_workers()
+    # redis_controller = RedisController("redis://localhost:6379").get_client()
+    # print("Remaining keys in Redis after tests:", redis_controller.keys("*"))
+
+    # BaseWorker().start()
