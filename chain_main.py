@@ -53,7 +53,7 @@ chain_id = chain.chain(
         {"task_type": "multiply", "payload": {"multiplier": 4}},
         {"task_type": "square", "payload": {}},
     ],
-    # completion_task="chain_finished",
+    completion_task="chain_finished",
 )
 
 

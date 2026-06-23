@@ -13,11 +13,22 @@ class ChainWorkerMixin:
             # Delete the chain-prefixed task key now that it's done
             self._redis.delete(f"chain:{task.task_id}")
 
+            # Completion tasks have __chain_id set (so they get cleaned up above)
+            # but must not call continue_chain — they are not sequential chain steps
+            is_completion_task = task.payload.get("__chain_position") is None
+            if is_completion_task:
+                return
+
             if success:
                 from broccoli.core.chain.task_chain import TaskChain
 
                 chain = TaskChain()
-                finished = chain.continue_chain(task, task.result)
+                # Pass push_completion_task=False so continue_chain does not also
+                # enqueue the completion task — on_finish handles that directly.
+                # Pushing it AND calling on_finish would run on_chain_finished twice.
+                finished = chain.continue_chain(
+                    task, task.result, push_completion_task=False
+                )
                 if finished:
                     self.on_finish(chain_id, task.result)
 

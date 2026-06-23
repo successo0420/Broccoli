@@ -71,21 +71,8 @@ class TaskChain:
             mapping={k: str(v) for k, v in chain.to_dict().items()},
         )
 
-        # Create first task with chain info
-        first_task = tasks[0]
-        task = Task(
-            task_type=first_task["task_type"],
-            task_id=first_task.get("task_id", str(uuid.uuid4())),
-            payload={
-                **first_task.get("payload", {}),
-                **(shared_payload or {}),
-                "__chain_id": self.chain_id,
-                "__chain_position": 0,
-                "__total_tasks": len(tasks),
-                "__is_first": True,
-            },
-            max_retries=first_task.get("max_retries", 3),
-        )
+        # Assign task_ids to ALL tasks first, before creating any Task objects.
+        # This ensures the IDs stored in Redis match the Task objects pushed to the queue.
         for t in tasks:
             if "task_id" not in t:
                 t["task_id"] = str(uuid.uuid4())
@@ -97,6 +84,22 @@ class TaskChain:
             value=json.dumps(tasks),
         )
 
+        # Create and push first task using the now-stable task_id
+        first_task = tasks[0]
+        task = Task(
+            task_type=first_task["task_type"],
+            task_id=first_task["task_id"],
+            payload={
+                **first_task.get("payload", {}),
+                **(shared_payload or {}),
+                "__chain_id": self.chain_id,
+                "__chain_position": 0,
+                "__total_tasks": len(tasks),
+                "__is_first": True,
+            },
+            max_retries=first_task.get("max_retries", 3),
+        )
+
         # Push first task
         self.queue.push(task)
         logger.info(f"Chain {self.chain_id} started with task {task.task_id}")
@@ -104,11 +107,19 @@ class TaskChain:
         return self.chain_id
 
     def continue_chain(
-        self, previous_task: Task, previous_result: Any
+        self,
+        previous_task: Task,
+        previous_result: Any,
+        push_completion_task: bool = True,
     ) -> Boolean | None:
         """
         Continue the chain after a task completes.
         Called by the worker's post_process hook.
+
+        Args:
+            push_completion_task: If True, enqueue the completion task when the chain
+                finishes. Set to False when the caller (e.g. ChainWorkerMixin.on_finish)
+                handles chain completion directly, to avoid running it twice.
         """
         chain_id = previous_task.payload.get("__chain_id")
         if not chain_id:
@@ -125,18 +136,22 @@ class TaskChain:
         if position + 1 >= total_tasks:
             self._redis.hset(f"chain:{chain_id}", "status", "completed")
             logger.info(f"Chain {chain_id} completed successfully")
-            metadata = self._redis.hgetall(f"chain:{chain_id}")
-            completion_task = metadata.get("completion_task")
 
-            if completion_task:
-                task = Task(
-                    task_type=completion_task,
-                    payload={
-                        "chain_id": chain_id,
-                        "result": previous_result,
-                    },
-                )
-                self.queue.push(task)
+            if push_completion_task:
+                metadata = self._redis.hgetall(f"chain:{chain_id}")
+                completion_task = metadata.get("completion_task")
+                if completion_task:
+                    task = Task(
+                        task_type=completion_task,
+                        payload={
+                            "chain_id": chain_id,
+                            "result": previous_result,
+                            # Mark as chain task so ChainWorkerMixin.post_process
+                            # deletes chain:{task_id} after it runs
+                            "__chain_id": chain_id,
+                        },
+                    )
+                    self.queue.push(task)
 
             return True
 
@@ -149,9 +164,10 @@ class TaskChain:
         tasks = json.loads(tasks_json)
         next_task_config = tasks[position + 1]
 
-        # Create next task
+        # Create next task using the pre-assigned task_id from the stored config
         next_task = Task(
             task_type=next_task_config["task_type"],
+            task_id=next_task_config["task_id"],
             payload={
                 **next_task_config.get("payload", {}),
                 "__chain_id": chain_id,
