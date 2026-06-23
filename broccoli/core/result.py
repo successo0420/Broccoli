@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 import redis
 
-from broccoli.core.chain import Chain
-from broccoli.core.task import Task
+from broccoli.core.chain.chain import Chain
+from broccoli.core.task.task import Task
 
 
 class ResultBackend:

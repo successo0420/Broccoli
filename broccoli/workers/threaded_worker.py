@@ -4,7 +4,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from broccoli.core.task import Task
+from broccoli.core.task.task import Task
 from broccoli.workers.base_worker import BaseWorker
 
 logger = logging.getLogger(__name__)

@@ -1,9 +1,9 @@
 from broccoli.core.health import HealthCheck
 from broccoli.core.result import ResultBackend
-from broccoli.core.task import Task
-from broccoli.core.task_chain import TaskChain
-from broccoli.core.task_queue import TaskQueue
-from broccoli.core.task_registry import TaskRegistry
+from broccoli.core.task.task import Task
+from broccoli.core.chain.task_chain import TaskChain
+from broccoli.core.task.task_queue import TaskQueue
+from broccoli.core.task.task_registry import TaskRegistry
 
 """Video Scheduler — a lightweight Redis-backed distributed task queue."""
 

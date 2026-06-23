@@ -1,9 +1,9 @@
 # test_chain.py
 import logging
 
+from broccoli.core.chain.task_chain import TaskChain
 from broccoli.core.redis_controller import RedisController
-from broccoli.core.task_chain import TaskChain
-from broccoli.core.task_registry import TaskRegistry
+from broccoli.core.task.task_registry import TaskRegistry
 from broccoli.workers.chain_worker import ChainWorker
 
 logging.basicConfig(level=logging.INFO)
@@ -44,7 +44,7 @@ def chain_finished_task(payload):
     print("we done done")
 
 
-RedisController().delete_all_keys()  # Clear Redis for a clean test run
+# RedisController().delete_all_keys()  # Clear Redis for a clean test run
 # Chain tasks together
 chain = TaskChain()
 chain_id = chain.chain(
@@ -55,8 +55,6 @@ chain_id = chain.chain(
     ],
     completion_task="chain_finished",
 )
-
-print(f"Chain ID: {chain_id}")
 
 
 # Start worker to process chain

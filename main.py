@@ -3,9 +3,9 @@ import logging
 import time
 
 from broccoli.core.redis_controller import RedisController
-from broccoli.core.task import Task
-from broccoli.core.task_queue import TaskQueue
-from broccoli.core.task_registry import TaskRegistry
+from broccoli.core.task.task import Task
+from broccoli.core.task.task_queue import TaskQueue
+from broccoli.core.task.task_registry import TaskRegistry
 from broccoli.workers.async_worker import AsyncWorker
 from broccoli.workers.base_worker import BaseWorker
 from broccoli.workers.hybrid_worker import HybridWorker

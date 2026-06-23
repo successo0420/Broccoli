@@ -6,10 +6,10 @@ import time
 import uuid
 from pathlib import Path
 
-from broccoli.core.task import Task
-from broccoli.core.task_chain import TaskChain
-from broccoli.core.task_queue import TaskQueue
-from broccoli.core.task_registry import TaskRegistry
+from broccoli.core.chain.task_chain import TaskChain
+from broccoli.core.task.task import Task
+from broccoli.core.task.task_queue import TaskQueue
+from broccoli.core.task.task_registry import TaskRegistry
 from broccoli.workers.async_worker import AsyncWorker
 from broccoli.workers.chain_worker import ChainWorker
 from broccoli.workers.hybrid_worker import HybridWorker

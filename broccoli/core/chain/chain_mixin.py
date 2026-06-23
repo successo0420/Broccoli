@@ -1,6 +1,6 @@
 from typing import Any
 
-from broccoli.core.task import Task
+from broccoli.core.task.task import Task
 
 
 class ChainWorkerMixin:
@@ -11,7 +11,7 @@ class ChainWorkerMixin:
         # Check if this task is part of a chain
         chain_id = task.payload.get("__chain_id")
         if chain_id and success:
-            from broccoli.core.task_chain import TaskChain
+            from broccoli.core.chain.task_chain import TaskChain
 
             chain = TaskChain()
             finished = chain.continue_chain(task, task.result)

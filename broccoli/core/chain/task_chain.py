@@ -5,12 +5,12 @@ import uuid
 from typing import Any, Dict, List
 from xmlrpc.client import Boolean
 
-from broccoli.core.chain import Chain
-from broccoli.core.chain_queue import ChainQueue
+from broccoli.core.chain.chain import Chain
+from broccoli.core.chain.chain_queue import ChainTaskQueue
 from broccoli.core.redis_controller import RedisController
-from broccoli.core.task import Task
-from broccoli.core.task_queue import TaskQueue
-from broccoli.core.task_registry import TaskRegistry
+from broccoli.core.task.task import Task
+from broccoli.core.task.task_queue import TaskQueue
+from broccoli.core.task.task_registry import TaskRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,9 @@ class TaskChain:
     """Chain multiple tasks together where each task passes its result to the next."""
 
     def __init__(self, redis_url: str = "redis://localhost:6379", chain_id: str = None):
-        self.queue = ChainQueue(redis_url)
+        self.queue = TaskQueue(
+            queue_name="chain_tasks:queue", redis_url=redis_url, task_prefix="chain"
+        )
         self._redis = RedisController(redis_url).get_client()
         self.registry = TaskRegistry()
         self.chain_id = chain_id or str(uuid.uuid4())
@@ -92,8 +94,6 @@ class TaskChain:
             name=f"chain:{self.chain_id}:tasks",
             value=json.dumps(tasks),
         )
-
-        print(json.dumps(tasks, indent=4))  # Debugging: print the tasks being chained
 
         # Push first task
         self.queue.push(task)

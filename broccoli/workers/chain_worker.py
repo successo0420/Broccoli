@@ -1,7 +1,7 @@
 import logging
 
-from broccoli.core.chain import Chain
-from broccoli.core.chain_mixin import ChainWorkerMixin
+from broccoli.core.chain.chain import Chain
+from broccoli.core.chain.chain_mixin import ChainWorkerMixin
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.result import ResultBackend
 from broccoli.workers.base_worker import BaseWorker
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 class ChainWorker(ChainWorkerMixin, BaseWorker):
     def __init__(self, redis_url="redis://localhost:6379"):
-        super().__init__(redis_url, chain=True)  # Initialize BaseWorker with chain=True
+        super().__init__(redis_url, queue_name="chain_tasks:queue", task_prefix="chain")
 
         self.registry.register_manually(
             "on_chain_finished",

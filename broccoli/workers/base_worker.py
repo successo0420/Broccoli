@@ -4,12 +4,11 @@ import time
 from abc import ABC
 from datetime import datetime
 
-from broccoli.core.chain_queue import ChainQueue
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.result import ResultBackend
-from broccoli.core.task import Task
-from broccoli.core.task_queue import TaskQueue
-from broccoli.core.task_registry import TaskRegistry
+from broccoli.core.task.task import Task
+from broccoli.core.task.task_queue import TaskQueue
+from broccoli.core.task.task_registry import TaskRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +18,14 @@ class BaseWorker(ABC):
         self,
         redis_url: str = "redis://localhost:6379",
         worker_id: str = None,
-        chain: bool = False,
+        queue_name: str = "tasks:queue",
+        task_prefix: str = "task",
     ):
         self.redis_url = redis_url
         self._redis = RedisController(redis_url).get_client()
-        self.queue = ChainQueue(redis_url) if chain else TaskQueue(redis_url)
+        self.queue = TaskQueue(
+            queue_name=queue_name, redis_url=redis_url, task_prefix=task_prefix
+        )
         self.registry = TaskRegistry()
         self.running = False
         self.worker_id = worker_id or f"worker-{id(self)}"
