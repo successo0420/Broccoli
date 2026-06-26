@@ -9,6 +9,7 @@ class ChainWorkerMixin:
     def post_process(self, task: Task, success: bool) -> None:
         """Override this in your worker and call super().post_process()."""
         chain_id = task.payload.get("__chain_id")
+
         if chain_id:
             # Delete the chain-prefixed task key now that it's done
             self._redis.delete(f"chain:{task.task_id}")
@@ -27,7 +28,7 @@ class ChainWorkerMixin:
                 # enqueue the completion task — on_finish handles that directly.
                 # Pushing it AND calling on_finish would run on_chain_finished twice.
                 finished = chain.continue_chain(
-                    task, task.result, push_completion_task=False
+                    task, task.result, push_completion_task=True
                 )
                 if finished:
                     self.on_finish(chain_id, task.result)

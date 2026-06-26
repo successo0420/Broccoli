@@ -11,6 +11,7 @@ from broccoli.core.task.task import Task
 from broccoli.core.task.task_queue import TaskQueue
 from broccoli.core.task.task_registry import TaskRegistry
 from broccoli.workers.async_worker import AsyncWorker
+from broccoli.workers.base_worker import BaseWorker
 from broccoli.workers.chain_worker import ChainWorker
 from broccoli.workers.hybrid_worker import HybridWorker
 from broccoli.workers.threaded_worker import ThreadedWorker
@@ -60,8 +61,6 @@ def calculate_file_hash(payload):
             chunks += 1
             if chunks % 100 == 0:
                 time.sleep(0.001)  # Simulate CPU work
-
-    print(f"Hashed {file_path} in {chunks} chunks")
 
     return {
         "hash": hash_func.hexdigest(),
@@ -123,6 +122,9 @@ def find_duplicate_files(payload):
                 )
             else:
                 hashes[file_hash] = file_path
+    print(len(file_paths))
+    print(len(duplicates))
+    print(duplicates)
 
     return {
         "total_files": len(file_paths),
@@ -210,6 +212,7 @@ def generate_report(payload):
 def send_notification(payload):
     # I/O intensive - API call simulation
     time.sleep(0.3)
+    print("notification sent!")
     return {
         "sent": True,
         "to": payload["email"],
@@ -449,6 +452,12 @@ def test_worker_pool():
     pool.start()
 
 
+@registry.register("tasks_complete")
+def tasks_complete(worker: BaseWorker):
+    print("All tasks in the chain have been completed.")
+    worker.stop()
+
+
 def test_complex_chain_with_dependencies():
     """Test complex chain with branching and dependencies."""
     print("\n=== TEST 7: Complex Chain with Dependencies ===")
@@ -479,7 +488,12 @@ def test_complex_chain_with_dependencies():
                     "message": "Complex processing completed",
                 },
             },
-        ]
+            {
+                "task_type": "tasks_complete",
+                "payload": {},
+            },
+        ],
+        completion_task="tasks_complete",
     )
 
     print(f"Complex chain started: {chain_id}")
