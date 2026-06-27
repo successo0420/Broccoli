@@ -41,14 +41,14 @@ class ThreadedWorker(BaseWorker):
             # Process the task
             success = self.process(task)
 
-            # Post-processing hook
-            self.post_process(task, success)
-
             # Update task status
             self._handle_task_result(task, success)
 
+            # Post-processing hook
+            self.post_process(task, success)
+
         except Exception as e:
-            logger.error(f"Task {task.task_id} failed: {e}")
+            logger.error(f"Task {task.task_id} failed: {e}", exc_info=True)
             task.error = str(e)
             self._handle_task_result(task, False)
         finally:

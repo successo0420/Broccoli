@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 
 from broccoli.core.chain.task_chain import TaskChain
+from broccoli.core.redis_controller import RedisController
 from broccoli.core.task.task import Task
 from broccoli.core.task.task_queue import TaskQueue
 from broccoli.core.task.task_registry import TaskRegistry
@@ -300,6 +301,10 @@ def test_basic_worker():
     files = create_test_files()
     worker = ThreadedWorker(max_workers=3)
 
+    @worker.on_complete
+    def handle_completion(task, result):
+        worker.stop()  # Stop the worker after chain completion
+
     # Push tasks
     tasks = []
     for file_path in files[:3]:
@@ -317,7 +322,11 @@ def test_chain_worker():
 
     files = create_test_files()
 
-    worker = ChainWorker(max_workers=2)
+    worker = ChainWorker()
+
+    @worker.on_complete
+    def handle_completion(task, result):
+        worker.stop()  # Stop the worker after chain completion
 
     # Create chain: validate → compress → upload
     chain_id = chain.chain(
@@ -339,8 +348,12 @@ def test_dependency_worker():
     """Test tasks with dependencies."""
     print("\n=== TEST 3: Task Dependencies ===")
 
-    test_dir, files = create_test_files()
+    files = create_test_files()
     worker = ThreadedWorker(max_workers=2)
+
+    @worker.on_complete
+    def handle_completion(task, result):
+        worker.stop()  # Stop the worker after chain completion
 
     # Task 1: Check if file exists
     task1 = Task(task_type="check_if_file_exists", payload={"file_path": files[0]})
@@ -378,6 +391,10 @@ def test_async_worker_io_intensive():
     test_dir, files = create_test_files()
     worker = AsyncWorker(10)
 
+    @worker.on_complete
+    def handle_completion(task, result):
+        worker.stop()  # Stop the worker after chain completion
+
     # Push many I/O tasks
     tasks = []
     for i, file_path in enumerate(files):
@@ -399,11 +416,15 @@ def test_hybrid_worker_mixed():
     """Test HybridWorker with mixed CPU and I/O tasks."""
     print("\n=== TEST 5: HybridWorker (Mixed Workload) ===")
 
-    test_dir, files = create_test_files()
+    files = create_test_files()
     worker = HybridWorker(
         thread_workers=3,  # For CPU tasks
         async_tasks=5,  # For I/O tasks
     )
+
+    @worker.on_complete
+    def handle_completion(task, result):
+        worker.stop()  # Stop the worker after chain completion
 
     # CPU tasks (hash, transcode)
     cpu_tasks = []
@@ -442,6 +463,14 @@ def test_worker_pool():
         worker_type=ThreadedWorker, num_workers=3, redis_url="redis://localhost:6379"
     )
 
+    # for worker in pool.workers:
+
+    #     @worker.on_complete
+    #     def handle_completion(task, result):
+    #         # Stop the pool when all tasks are done
+    #         if queue.is_empty():
+    #             pool.shutdown_flag.set()  # Signal shutdown
+
     # Push many tasks
     for i in range(15):
         task = Task(task_type="generate_report", payload={"data": list(range(100))})
@@ -452,12 +481,6 @@ def test_worker_pool():
     pool.start()
 
 
-@registry.register("tasks_complete")
-def tasks_complete(worker: BaseWorker):
-    print("All tasks in the chain have been completed.")
-    worker.stop()
-
-
 def test_complex_chain_with_dependencies():
     """Test complex chain with branching and dependencies."""
     print("\n=== TEST 7: Complex Chain with Dependencies ===")
@@ -465,6 +488,10 @@ def test_complex_chain_with_dependencies():
     files = create_test_files()
 
     worker = ChainWorker()
+
+    @worker.on_complete
+    def handle_completion(task, result):
+        worker.stop()  # Stop the worker after chain completion
 
     # Chain: duplicate check → hash → copy → notify
     chain_id = chain.chain(
@@ -493,7 +520,6 @@ def test_complex_chain_with_dependencies():
                 "payload": {},
             },
         ],
-        completion_task="tasks_complete",
     )
 
     print(f"Complex chain started: {chain_id}")
@@ -517,9 +543,9 @@ def run_all_tests():
         # test_chain_worker,
         # test_dependency_worker,
         # test_async_worker_io_intensive,
-        # test_hybrid_worker_mixed,
+        test_hybrid_worker_mixed,
         # test_worker_pool,
-        test_complex_chain_with_dependencies,
+        # test_complex_chain_with_dependencies,
     ]
 
     for test_func in test_functions:
@@ -533,4 +559,5 @@ def run_all_tests():
 
 if __name__ == "__main__":
     # WorkerPool(worker_type=ThreadedWorker, num_workers=4).start()
+    RedisController().get_client().flushdb()  # Clear Redis before tests
     run_all_tests()

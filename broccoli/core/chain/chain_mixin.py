@@ -1,3 +1,4 @@
+# video_scheduler/core/chain_mixin.py
 from typing import Any
 
 from broccoli.core.task.task import Task
@@ -18,20 +19,30 @@ class ChainWorkerMixin:
             # but must not call continue_chain — they are not sequential chain steps
             is_completion_task = task.payload.get("__chain_position") is None
             if is_completion_task:
+                # Run completion handlers for the chain
+                if success:
+                    self._run_completion_handlers(task, task.result)
+                else:
+                    self._run_failure_handlers(
+                        task,
+                        Exception(task.error)
+                        if task.error
+                        else Exception("Chain task failed"),
+                    )
                 return
 
             if success:
                 from broccoli.core.chain.task_chain import TaskChain
 
                 chain = TaskChain()
-                # Pass push_completion_task=False so continue_chain does not also
-                # enqueue the completion task — on_finish handles that directly.
-                # Pushing it AND calling on_finish would run on_chain_finished twice.
                 finished = chain.continue_chain(
                     task, task.result, push_completion_task=True
                 )
                 if finished:
                     self.on_finish(chain_id, task.result)
+
+                # Run completion handlers for chain steps
+                self._run_completion_handlers(task, task.result)
 
     def on_finish(self, chain_id: str, final_result: Any) -> None:
         """Hook called when the entire chain is finished. Override in your worker."""

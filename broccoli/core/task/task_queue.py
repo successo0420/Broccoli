@@ -83,10 +83,7 @@ class TaskQueue:
         if not task_data:
             return None
 
-        decoded_task_data = {
-            k.decode("utf-8"): v.decode("utf-8") for k, v in task_data.items()
-        }
-        task = Task.from_dict(decoded_task_data)
+        task = Task.from_dict(task_data)
 
         self._redis.hset(f"{self.task_prefix}:{task_id}", "status", "in_progress")
         task.status = "in_progress"

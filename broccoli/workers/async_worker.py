@@ -38,11 +38,11 @@ class AsyncWorker(BaseWorker):
                 loop = asyncio.get_event_loop()
                 success = await loop.run_in_executor(None, self.process, task)
 
-                # Post-processing hook
-                self.post_process(task, success)
-
                 # Update task status
                 self._handle_task_result(task, success)
+
+                # Post-processing hook
+                self.post_process(task, success)
 
             except Exception as e:
                 logger.error(f"Task {task.task_id} async failed: {e}")

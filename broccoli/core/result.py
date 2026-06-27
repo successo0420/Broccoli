@@ -21,7 +21,7 @@ class ResultBackend:
             result=task.result,
             status=task.status,
             chain=False,
-            error=task.get("error", ""),
+            error=task.error or "",
         )
 
         json_string = json.dumps(result_mapping.to_dict())

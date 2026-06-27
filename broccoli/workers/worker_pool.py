@@ -18,27 +18,34 @@ class WorkerPool:
         self.worker_type = worker_type
         self.num_workers = num_workers
         self.redis_url = redis_url
-        self.workers: List[BaseWorker] = []
+        self.workers: List[BaseWorker] = self._create_workers()
         self.threads: List[threading.Thread] = []
         self.running = False
         self.shutdown_flag = threading.Event()  # Added for clean shutdown
+
+    def _create_workers(self):
+        """Create worker instances."""
+        for i in range(self.num_workers):
+            worker = self.worker_type(
+                redis_url=self.redis_url, worker_id=f"worker-{i + 1}"
+            )
+            self.workers.append(worker)
+        return self.workers
 
     def start(self):
         """Start all workers."""
         self.running = True
 
-        for i in range(self.num_workers):
-            worker = self.worker_type(
-                redis_url=self.redis_url, worker_id=f"worker-{i + 1}"
-            )
+        self._create_workers()
 
+        for i in range(self.num_workers):
+            worker = self.workers[i]
             thread = threading.Thread(
                 target=worker.start,
                 name=f"Worker-{i + 1}",
                 daemon=True,  # Keep daemon so they exit when main exits
             )
 
-            self.workers.append(worker)
             self.threads.append(thread)
             thread.start()
             logger.info(f"Started worker {i + 1}/{self.num_workers}")
