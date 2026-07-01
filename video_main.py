@@ -351,9 +351,10 @@ def test_dependency_worker():
     files = create_test_files()
     worker = ThreadedWorker(max_workers=2)
 
-    @worker.on_complete
-    def handle_completion(task, result):
-        worker.stop()  # Stop the worker after chain completion
+    # @worker.on_complete
+    # def handle_completion(task, result):
+    #     if worker.queue.is_empty():
+    #         worker.stop()  # Stop the worker after chain completion
 
     # Task 1: Check if file exists
     task1 = Task(task_type="check_if_file_exists", payload={"file_path": files[0]})
@@ -424,7 +425,8 @@ def test_hybrid_worker_mixed():
 
     @worker.on_complete
     def handle_completion(task, result):
-        worker.stop()  # Stop the worker after chain completion
+        if queue.is_fully_drained():
+            worker.stop()  # Stop the worker after chain completion
 
     # CPU tasks (hash, transcode)
     cpu_tasks = []

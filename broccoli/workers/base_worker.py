@@ -1,4 +1,4 @@
-# video_scheduler/core/worker.py
+# broccoli/workers/base_worker.py
 import logging
 import time
 from abc import ABC
@@ -45,7 +45,7 @@ class BaseWorker(ABC):
     def add_completion_handler(self, handler: Callable[[Task, Any], None]):
         """Add a handler to run when tasks complete successfully."""
         self._completion_handlers.append(handler)
-        return self  # For chaining
+        return self
 
     def add_failure_handler(self, handler: Callable[[Task, Exception], None]):
         """Add a handler to run when tasks fail."""
@@ -87,7 +87,6 @@ class BaseWorker(ABC):
     # ============ Handler Execution Methods ============
 
     def _run_completion_handlers(self, task: Task, result: Any):
-        """Run all completion handlers."""
         for handler in self._completion_handlers:
             try:
                 handler(task, result)
@@ -95,7 +94,6 @@ class BaseWorker(ABC):
                 logger.error(f"Completion handler failed: {e}", exc_info=True)
 
     def _run_failure_handlers(self, task: Task, error: Exception):
-        """Run all failure handlers."""
         for handler in self._failure_handlers:
             try:
                 handler(task, error)
@@ -103,7 +101,7 @@ class BaseWorker(ABC):
                 logger.error(f"Failure handler failed: {e}", exc_info=True)
 
     def _run_pre_process_handlers(self, task: Task) -> bool:
-        """Run all pre-process handlers. Return False if any returns False."""
+        """Return False if any handler returns False or raises."""
         for handler in self._pre_process_handlers:
             try:
                 if not handler(task):
@@ -114,40 +112,53 @@ class BaseWorker(ABC):
         return True
 
     def _run_post_process_handlers(self, task: Task, success: bool):
-        """Run all post-process handlers."""
         for handler in self._post_process_handlers:
             try:
                 handler(task, success)
             except Exception as e:
                 logger.error(f"Post-process handler failed: {e}", exc_info=True)
 
-    # ============ Override Hooks (for backward compatibility) ============
+    # ============ Override Hooks ============
 
     def pre_process(self, task: Task) -> bool:
-        """Hook to run before processing. Override this in your custom worker."""
-        # Run registered handlers
+        """
+        Hook called before processing. Override in subclasses for custom logic.
+        Registered handlers run first; return False from any handler to skip the task.
+        """
         return self._run_pre_process_handlers(task)
 
     def post_process(self, task: Task, success: bool) -> None:
-        """Hook to run after processing. Override this in your custom worker."""
-        # Run registered handlers
+        """
+        Hook called after processing (and after queue-state transitions).
+
+        Only runs result storage and fires completion/failure handlers for
+        terminal states (completed or failed).  Requeued tasks (status='pending')
+        are skipped entirely — their hash must remain in Redis for the next
+        worker that picks them up.
+
+        Queue management (complete / fail / requeue) has already happened in
+        ``_handle_task_result`` before this is called.
+        """
         self._run_post_process_handlers(task, success)
 
-        # Chain tasks are cleaned up in bulk by ChainWorkerMixin
+        # Chain tasks are cleaned up in bulk by ChainWorkerMixin.
         if task.payload.get("__chain_id"):
             logger.info(
                 f"Task {task.task_id} {task.status} (chain task, skipping result store)"
             )
             return
 
-        # Store result
-        print(task.status, task.result)
-        self.result.store_task(task)
-        if self._redis.delete(f"{self.task_prefix}:{task.task_id}"):
-            print(f"Task {task.task_id} removed from Redis after processing")
-        logger.info(f"Task {task.task_id} {task.status} with result: {task.result}")
+        # Do not store or delete a requeued task — it will be retried and still
+        # needs its hash in Redis.  The worker that eventually completes or
+        # permanently fails it will handle cleanup.
+        if task.status == "pending":
+            return
 
-        # Run completion or failure handlers
+        # Persist result and remove the task metadata hash.
+        self.result.store_task(task)
+        self._redis.delete(f"{self.task_prefix}:{task.task_id}")
+        logger.info(f"Task {task.task_id} {task.status} — result stored")
+
         if success:
             self._run_completion_handlers(task, task.result)
         else:
@@ -156,10 +167,13 @@ class BaseWorker(ABC):
                 Exception(task.error) if task.error else Exception("Unknown error"),
             )
 
-    # ============ Main Process Method ============
+    # ============ Core Task Lifecycle ============
 
     def process(self, task: Task) -> bool:
-        """Process a single task using the registered handler."""
+        """
+        Execute the task using its registered handler.
+        Returns True on success, False on failure.
+        """
         try:
             handler = self.registry.get_handler(task.task_type)
             if not handler:
@@ -167,8 +181,7 @@ class BaseWorker(ABC):
                 logger.error(task.error)
                 return False
 
-            result = handler(task.payload)
-            task.result = result
+            task.result = handler(task.payload)
             return True
 
         except Exception as e:
@@ -176,15 +189,58 @@ class BaseWorker(ABC):
             logger.error(f"Task {task.task_id} failed: {e}", exc_info=True)
             return False
 
+    def _handle_task_result(self, task: Task, success: bool) -> None:
+        """
+        Central state machine for task outcomes.
+
+        Transitions:
+          success           → completed  — queue.complete() releases dependents
+          failure, retries  → pending    — queue.requeue() moves back to runnable queue
+          failure, no retry → failed     — queue.fail() removes from processing set
+
+        _update_task() is called BEFORE queue.complete() so that any concurrent
+        push() checking the parent's status will see 'completed' rather than
+        'in_progress' when deciding whether to wait or enqueue immediately.
+
+        Subclasses (ThreadedWorker, AsyncWorker, HybridWorker) inherit this so
+        the retry / dependency-release logic lives in exactly one place.
+        """
+        if success:
+            task.status = "completed"
+            task.progress = 100.0
+            # Persist 'completed' status BEFORE releasing dependents so that
+            # any concurrent push() checking this task's status sees the
+            # terminal state and enqueues immediately rather than waiting.
+            self._update_task(task)
+            self.queue.complete(task)  # releases any waiting dependents
+        else:
+            task.retries += 1
+            if task.retries >= task.max_retries:
+                task.status = "failed"
+                if not task.error:
+                    task.error = "Max retries exceeded"
+                self._update_task(task)
+                self.queue.fail(task)
+            else:
+                task.status = "pending"
+                self._update_task(task)
+                self.queue.requeue(task.task_id)
+                logger.info(
+                    f"Task {task.task_id} requeued "
+                    f"(attempt {task.retries}/{task.max_retries})"
+                )
+
     def _update_task(self, task: Task) -> None:
-        """Update task in Redis."""
+        """Persist current task state to Redis (skipped for chain tasks)."""
         if task.payload.get("__chain_id"):
             return
         task.updated_at = datetime.now().isoformat()
         self._redis.hset(f"{self.task_prefix}:{task.task_id}", mapping=task.to_dict())
 
+    # ============ Worker Loop ============
+
     def start(self):
-        """Start the worker."""
+        """Start the blocking worker loop."""
         self.running = True
         logger.info(f"Worker {self.worker_id} started")
 
@@ -195,37 +251,18 @@ class BaseWorker(ABC):
                     continue
 
                 logger.info(
-                    f"Worker {self.worker_id} processing task {task.task_id} ({task.task_type})"
+                    f"Worker {self.worker_id} processing task "
+                    f"{task.task_id} ({task.task_type})"
                 )
 
-                # Pre-processing hook
                 if not self.pre_process(task):
                     logger.info(f"Task {task.task_id} skipped by pre_process")
+                    # Remove from processing set without touching result storage.
+                    self.queue.fail(task)
                     continue
 
-                # Process the task
                 success = self.process(task)
-
-                # Update task status
-                if success:
-                    task.status = "completed"
-                    task.progress = 100.0
-                else:
-                    task.retries += 1
-                    if task.retries >= task.max_retries:
-                        task.status = "failed"
-                        if not task.error:
-                            task.error = "Max retries exceeded"
-                    else:
-                        task.status = "pending"
-                        self.queue.requeue(task.task_id)
-                        logger.info(
-                            f"Task {task.task_id} requeued (attempt {task.retries}/{task.max_retries})"
-                        )
-
-                self._update_task(task)
-
-                # Post-processing hook
+                self._handle_task_result(task, success)
                 self.post_process(task, success)
 
             except Exception as e:

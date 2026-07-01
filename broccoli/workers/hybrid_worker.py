@@ -1,4 +1,4 @@
-# video_scheduler/core/hybrid_worker.py
+# broccoli/workers/hybrid_worker.py
 import asyncio
 import json
 import logging
@@ -12,7 +12,16 @@ logger = logging.getLogger(__name__)
 
 
 class HybridWorker(BaseWorker):
-    """Worker that combines threads and async for maximum throughput."""
+    """
+    Worker that combines asyncio (for concurrency) with a thread pool
+    (for CPU-bound / blocking task handlers).
+
+    Result storage and user callbacks are handled entirely inside
+    ``_handle_hybrid_result``, which means ``post_process`` must NOT repeat
+    them.  This class overrides ``post_process`` to run only the registered
+    post-process handlers and nothing else, preventing double-fired callbacks
+    and double-stored results.
+    """
 
     def __init__(
         self,
@@ -24,80 +33,118 @@ class HybridWorker(BaseWorker):
     ):
         super().__init__(redis_url, worker_id)
         self.thread_pool = ThreadPoolExecutor(max_workers=thread_workers)
-        self.async_semaphore = asyncio.Semaphore(async_tasks)
         self.thread_workers = thread_workers
         self.async_tasks = async_tasks
-        self.active_tasks = set()
-        self.loop = None
+        self.active_tasks: set[str] = set()
+        self.loop: asyncio.AbstractEventLoop | None = None
         self.result_ttl = result_ttl
+        # Semaphore created lazily inside the running loop.
+        self._semaphore: asyncio.Semaphore | None = None
 
-    async def process_task_hybrid(self, task):
-        """Process task using hybrid approach."""
-        async with self.async_semaphore:
+    # ------------------------------------------------------------------
+    # post_process override — prevent double-firing
+    # ------------------------------------------------------------------
+
+    def post_process(self, task: Task, success: bool) -> None:
+        """
+        HybridWorker handles result storage, hash cleanup, and completion /
+        failure callbacks inside ``_handle_hybrid_result``.  This override
+        runs only the registered post-process handlers so that none of those
+        actions fire a second time.
+        """
+        self._run_post_process_handlers(task, success)
+
+    # ------------------------------------------------------------------
+    # Async / hybrid task processing
+    # ------------------------------------------------------------------
+
+    async def process_task_hybrid(self, task: Task) -> None:
+        """
+        Acquire a concurrency slot, run the task handler in the thread pool,
+        then handle the result (queue transitions, result storage, callbacks).
+        """
+        async with self._semaphore:
             try:
-                # Use thread pool for CPU-bound work
-                loop = asyncio.get_event_loop()
+                # Use get_running_loop() — get_event_loop() is deprecated in 3.10+.
+                loop = asyncio.get_running_loop()
                 success = await loop.run_in_executor(
                     self.thread_pool, self._process_sync, task
                 )
-                # Handle result after processing
-                self._handle_task_result(task, success)
+                self._handle_hybrid_result(task, success)
             except Exception as e:
-                logger.error(f"Hybrid task {task.task_id} failed: {e}")
+                logger.error(f"Hybrid task {task.task_id} failed: {e}", exc_info=True)
                 task.error = str(e)
-                self._handle_task_result(task, False)
+                self._handle_hybrid_result(task, False)
             finally:
                 self.active_tasks.discard(task.task_id)
 
-    def _process_sync(self, task):
-        """Sync processing (runs in thread pool)."""
-        # Pre-processing hook
+    def _process_sync(self, task: Task) -> bool:
+        """Blocking processing step — runs inside the thread pool."""
         if not self.pre_process(task):
             return False
+        return self.process(task)
 
-        # Process the task
-        success = self.process(task)
-        return success
+    def _handle_hybrid_result(self, task: Task, success: bool) -> None:
+        """
+        Manage queue transitions and persist results.
 
-    def _handle_task_result(self, task: Task, success: bool) -> None:
-        """Handle task result - saves result and cleans up."""
-        # Update task status
+        Queue state is handled by TaskQueue methods (complete / fail / requeue),
+        not by direct Redis calls.  Result saving and hash cleanup are kept
+        separate so each concern has one place.
+
+        Completion / failure handlers are fired here (not in post_process) to
+        keep the full lifecycle in one readable sequence.
+        """
         if success:
             task.status = "completed"
             task.progress = 100.0
-            logger.info(f"Task {task.task_id} completed successfully")
+            # Update Redis before releasing dependents (same ordering as BaseWorker).
+            self._update_task(task)
+            self.queue.complete(task)  # releases dependents, removes from processing
+            logger.info(f"Task {task.task_id} completed")
         else:
             task.retries += 1
             if task.retries >= task.max_retries:
                 task.status = "failed"
                 if not task.error:
                     task.error = "Max retries exceeded"
+                self._update_task(task)
+                self.queue.fail(task)  # removes from processing set
             else:
                 task.status = "pending"
-                self.queue.requeue(task.task_id)
+                self._update_task(task)
+                self.queue.requeue(task.task_id)  # back to runnable queue
                 logger.info(
-                    f"Task {task.task_id} requeued (attempt {task.retries}/{task.max_retries})"
+                    f"Task {task.task_id} requeued "
+                    f"(attempt {task.retries}/{task.max_retries})"
                 )
-                return  # Don't clean up if requeued
+                # Requeued — don't store a partial result or fire handlers.
+                # post_process still runs for registered post-process handlers.
+                self.post_process(task, success)
+                return
 
-        # Run registered handlers
+        # Persist extended result metadata with TTL.
+        self._save_result(task)
+
+        # Remove task metadata hash (queue sets already updated above).
+        self._cleanup_task(task)
+
+        # Fire user-facing callbacks.
         if success:
             self._run_completion_handlers(task, task.result)
         else:
             error = Exception(task.error) if task.error else Exception("Task failed")
             self._run_failure_handlers(task, error)
 
-        # Save result (separate from task data)
-        self._save_result(task)
-
-        # Clean up task from Redis
-        self._cleanup_task(task)
-
-        # Call post_process hook
+        # post_process runs only registered post-process handlers (overridden above).
         self.post_process(task, success)
 
+    # ------------------------------------------------------------------
+    # Result storage & cleanup
+    # ------------------------------------------------------------------
+
     def _save_result(self, task: Task) -> None:
-        """Save task result with full metadata."""
+        """Persist full result metadata under ``result:<task_id>`` with a TTL."""
         result_data = {
             "id": task.task_id,
             "task_type": task.task_type,
@@ -110,69 +157,68 @@ class HybridWorker(BaseWorker):
             "completed_at": datetime.now().isoformat(),
             "retries": task.retries,
         }
-
-        # Store result with TTL
         self._redis.setex(
             f"result:{task.task_id}", self.result_ttl, json.dumps(result_data)
         )
-        logger.debug(f"Result saved for task {task.task_id}")
+        logger.debug(f"Result saved for task {task.task_id} (TTL={self.result_ttl}s)")
 
     def _cleanup_task(self, task: Task) -> None:
-        """Completely remove task from Redis."""
-        task_id = task.task_id
+        """
+        Remove the task metadata hash from Redis.
 
-        # Delete task data hash
-        self._redis.delete(f"{self.task_prefix}:{task_id}")
+        Queue sorted-set membership is already managed by
+        ``queue.complete()`` / ``queue.fail()`` — no ``zrem`` calls here.
+        """
+        self._redis.delete(f"{self.task_prefix}:{task.task_id}")
 
-        # Remove from queue
-        self._redis.zrem(self.queue.queue_key, task_id)
-
-        # Delete chain reference if exists
         if task.payload.get("__chain_id"):
-            self._redis.delete(f"chain:{task_id}")
+            self._redis.delete(f"chain:{task.task_id}")
 
-        logger.info(f"Task {task_id} cleaned up from Redis")
+        logger.info(f"Task {task.task_id} metadata cleaned up")
+
+    # ------------------------------------------------------------------
+    # Worker loop
+    # ------------------------------------------------------------------
 
     def start(self):
-        """Start hybrid worker."""
+        """Create a fresh event loop and run until stopped."""
         self.running = True
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
-
         logger.info(
-            f"HybridWorker started (threads={self.thread_workers}, async={self.async_tasks})"
+            f"HybridWorker {self.worker_id} started "
+            f"(threads={self.thread_workers}, async_slots={self.async_tasks})"
         )
-        self.loop.run_until_complete(self._run_hybrid())
-        self.loop.close()
+        try:
+            self.loop.run_until_complete(self._run_hybrid())
+        finally:
+            self.loop.close()
 
     async def _run_hybrid(self):
+        self._semaphore = asyncio.Semaphore(self.async_tasks)
+
         while self.running:
             if len(self.active_tasks) >= self.async_tasks:
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05)
                 continue
 
-            # Pop task with timeout
-            task = await asyncio.get_event_loop().run_in_executor(
-                None,
-                self.queue.pop_with_timeout,
-                1,
-            )
+            loop = asyncio.get_running_loop()
+            task = await loop.run_in_executor(None, self.queue.pop_with_timeout, 1)
 
             if task is None:
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.05)
                 continue
 
             self.active_tasks.add(task.task_id)
             asyncio.create_task(self.process_task_hybrid(task))
 
-        # Wait for all tasks to complete
+        # Drain in-flight tasks before shutting down.
         while self.active_tasks:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
 
         self.thread_pool.shutdown(wait=True)
-        logger.info("HybridWorker stopped")
+        logger.info(f"HybridWorker {self.worker_id} stopped")
 
     def stop(self):
-        """Stop the worker."""
         self.running = False
-        logger.info("HybridWorker stopping...")
+        logger.info(f"HybridWorker {self.worker_id} stopping...")

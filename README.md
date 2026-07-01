@@ -1,181 +1,88 @@
-Here's the updated documentation with all references changed from "video_scheduler" to "broccoli":
-
-```markdown
 # Broccoli
-A lightweight, Redis-backed distributed task queue system inspired by Celery. Built for simplicity and flexibility.
 
-## Features
+A lightweight Redis-backed task queue with priority scheduling, dependency chaining, and multiple worker execution models.
 
-- **Simple API**: Register tasks with decorators, push to queue, process with workers
-- **Multiple Worker Types**: Base, Threaded, Async, and Hybrid workers
-- **Worker Pools**: Run multiple workers for parallel processing
-- **Task Chaining**: Chain tasks together with result passing
-- **Redis Backend**: Fast, reliable, and widely supported
-- **Retry Logic**: Automatic retries with configurable max attempts
-- **Task Status Tracking**: Monitor progress from pending → in_progress → completed/failed
-- **Priority Support**: Control task execution order
-- **Result Storage**: Store and retrieve task results
-- **Graceful Shutdown**: Handle SIGTERM/SIGINT gracefully
-- **Extensible**: Customize workers with pre/post processing hooks
+---
 
-## Installation
+## Requirements
 
-```bash
-pip install broccoli
-```
+- Python 3.10+
+- Redis 6+
+- `redis-py`
 
-### Requirements
+---
 
-- Python 3.8+
-- Redis 5.0+
-
-## Quick Start
-
-### 1. Define Your Tasks
+## Quick start
 
 ```python
-# tasks.py
-from broccoli.core.task_registry import TaskRegistry
+from broccoli.core.task.task import Task
+from broccoli.core.task.task_queue import TaskQueue
+from broccoli.workers.base_worker import BaseWorker
 
-registry = TaskRegistry()
+# Register a task handler
+class MyWorker(BaseWorker):
+    pass
 
-@registry.register("add_numbers")
-def add_numbers(payload):
-    """Add two numbers together."""
-    result = payload["a"] + payload["b"]
-    return {"sum": result, "operation": "addition"}
+worker = MyWorker(redis_url="redis://localhost:6379")
+worker.registry.register("send_email", lambda payload: send(payload["to"]))
 
-@registry.register("send_email")
-def send_email(payload):
-    """Send an email."""
-    print(f"Sending to {payload['to']}: {payload['subject']}")
-    return {"status": "sent", "message_id": "12345"}
-
-@registry.register("process_video")
-def process_video(payload):
-    """Process a video file."""
-    input_path = payload["input_path"]
-    output_path = payload["output_path"]
-    
-    # Your video processing logic
-    return {
-        "output_path": output_path,
-        "size": 1024,
-        "duration": 120
-    }
-```
-
-### 2. Start a Worker
-
-```bash
-# Single threaded worker with 4 threads
-python -m broccoli.cli --worker-type threaded --concurrency 4
-
-# Single async worker with 10 concurrent tasks
-python -m broccoli.cli --worker-type async --concurrency 10
-
-# Single hybrid worker
-python -m broccoli.cli --worker-type hybrid --thread-workers 2 --async-tasks 5
-
-# Worker pool with 3 threaded workers
-python -m broccoli.cli --pool --worker-type threaded --num-workers 3 --concurrency 2
-
-# Custom Redis
-python -m broccoli.cli --redis-url redis://prod:6379 --worker-type async --concurrency 20
-```
-
-### 3. Push Tasks to Queue
-
-```python
-# producer.py
-from broccoli.core.task import Task
-from broccoli.core.task_queue import TaskQueue
-
+# Push a task
 queue = TaskQueue(redis_url="redis://localhost:6379")
+task = Task(task_type="send_email", payload={"to": "user@example.com"})
+queue.push(task)
 
-# Create tasks
-task1 = Task(
-    task_type="add_numbers",
-    payload={"a": 10, "b": 20},
-    max_retries=3
-)
-
-task2 = Task(
-    task_type="send_email",
-    payload={
-        "to": "user@example.com",
-        "subject": "Hello from Broccoli",
-        "body": "This is a test email"
-    },
-    priority=1
-)
-
-# Push to queue
-task_id1 = queue.push(task1)
-task_id2 = queue.push(task2, priority=1)
-
-print(f"Tasks pushed: {task_id1}, {task_id2}")
+# Start processing (blocking)
+worker.start()
 ```
 
-### 4. Check Task Status
+---
 
-```python
-# status.py
-from broccoli.core.task_queue import TaskQueue
+## Worker types
 
-queue = TaskQueue()
-task = queue.get_task("your-task-id-here")
+Choose the worker that fits your workload.
 
-if task:
-    print(f"Status: {task.status}")
-    print(f"Progress: {task.progress}%")
-    print(f"Retries: {task.retries}/{task.max_retries}")
-    if task.status == "completed":
-        print(f"Result: {task.result}")
-    elif task.status == "failed":
-        print(f"Error: {task.error}")
-```
+### BaseWorker — simple, single-threaded
 
-## Worker Types
-
-### BaseWorker (Sequential)
-Single-threaded, processes one task at a time. Good for debugging.
+Processes one task at a time in a blocking loop. Good for low-volume workloads or when you want the simplest possible setup.
 
 ```python
 from broccoli.workers.base_worker import BaseWorker
 
-worker = BaseWorker(redis_url="redis://localhost:6379")
+class VideoWorker(BaseWorker):
+    pass
+
+worker = VideoWorker(redis_url="redis://localhost:6379")
+worker.registry.register("transcode", transcode_video)
 worker.start()
 ```
 
-### ThreadedWorker (Multi-threaded)
-Processes multiple tasks concurrently using threads. Good for CPU-bound work.
+### ThreadedWorker — concurrent, CPU-friendly
+
+Runs a configurable thread pool. Good for I/O-bound tasks or when you want multiple tasks processing in parallel without asyncio.
 
 ```python
 from broccoli.workers.threaded_worker import ThreadedWorker
 
-worker = ThreadedWorker(
-    redis_url="redis://localhost:6379",
-    max_workers=4
-)
+worker = ThreadedWorker(redis_url="redis://localhost:6379", max_workers=8)
+worker.registry.register("resize_image", resize)
 worker.start()
 ```
 
-### AsyncWorker (Asyncio)
-Uses asyncio for concurrent I/O operations. Good for network calls, API requests.
+### AsyncWorker — high-concurrency async
+
+Dispatches tasks as asyncio coroutines. Good for large numbers of I/O-bound tasks (HTTP calls, DB queries) where thread overhead would be significant.
 
 ```python
 from broccoli.workers.async_worker import AsyncWorker
 
-worker = AsyncWorker(
-    redis_url="redis://localhost:6379",
-    max_concurrent=10
-)
+worker = AsyncWorker(redis_url="redis://localhost:6379", max_concurrent=50)
+worker.registry.register("fetch_url", fetch)
 worker.start()
 ```
 
-### HybridWorker (Threads + Async)
-Combines threading and asyncio for maximum throughput.
+### HybridWorker — async dispatch + thread execution
+
+Combines asyncio concurrency control with a ThreadPoolExecutor for the actual handler. The right choice when you want high throughput and your handlers are not async-native.
 
 ```python
 from broccoli.workers.hybrid_worker import HybridWorker
@@ -183,295 +90,145 @@ from broccoli.workers.hybrid_worker import HybridWorker
 worker = HybridWorker(
     redis_url="redis://localhost:6379",
     thread_workers=4,
-    async_tasks=10
+    async_tasks=20,
+    result_ttl=3600,   # seconds before result expires in Redis
 )
+worker.registry.register("process_batch", process)
 worker.start()
 ```
 
-## Custom Worker with Hooks
+### WorkerPool — run multiple workers
+
+Spawns N workers of any type, each in its own daemon thread.
 
 ```python
-# worker.py
-from broccoli.workers.base_worker import BaseWorker
-import os
-import shutil
-
-class MyWorker(BaseWorker):
-    def pre_process(self, task):
-        """Setup before task execution."""
-        print(f"Starting task: {task.task_id}")
-        
-        # Create temp directory
-        temp_dir = f"/tmp/worker_{task.task_id}"
-        os.makedirs(temp_dir, exist_ok=True)
-        task.payload["temp_dir"] = temp_dir
-        
-        return True
-    
-    def post_process(self, task, success):
-        """Cleanup after task execution."""
-        temp_dir = task.payload.get("temp_dir")
-        if temp_dir and os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-        
-        status = "✅" if success else "❌"
-        print(f"{status} Task {task.task_id} completed")
-
-# Use custom worker
-worker = MyWorker(redis_url="redis://localhost:6379")
-worker.start()
-```
-
-## Task Chaining
-
-Chain multiple tasks where each task passes its result to the next.
-
-```python
-from broccoli.core.task_chain import TaskChain
-from broccoli.core.task_registry import TaskRegistry
-
-registry = TaskRegistry()
-
-@registry.register("download")
-def download(payload):
-    # Download file
-    return {"file_path": "/tmp/video.mp4"}
-
-@registry.register("process")
-def process(payload):
-    # Previous result available in payload
-    file_path = payload.get("__previous_result")["file_path"]
-    # Process video
-    return {"processed": True}
-
-@registry.register("upload")
-def upload(payload):
-    file_path = payload.get("__previous_result")["file_path"]
-    # Upload to cloud
-    return {"url": "https://cdn.example.com/video.mp4"}
-
-# Create chain
-chain = TaskChain()
-chain_id = chain.chain([
-    {"task_type": "download", "payload": {"url": "https://example.com/video.mp4"}},
-    {"task_type": "process", "payload": {}},
-    {"task_type": "upload", "payload": {"bucket": "my-bucket"}}
-])
-
-# Check chain status
-status = chain.get_chain_status(chain_id)
-print(status)
-```
-
-### Chain with Worker
-
-```python
-from broccoli.core.task_chain import ChainWorkerMixin
-from broccoli.workers.hybrid_worker import HybridWorker
-
-class ChainWorker(ChainWorkerMixin, HybridWorker):
-    pass
-
-worker = ChainWorker()
-worker.start()  # Processes chains automatically
-```
-
-## Worker Pool
-
-Run multiple workers concurrently.
-
-```python
-from broccoli.core.worker_pool import WorkerPool
+from broccoli.workers.worker_pool import WorkerPool
 from broccoli.workers.threaded_worker import ThreadedWorker
 
 pool = WorkerPool(
     worker_type=ThreadedWorker,
     num_workers=4,
-    redis_url="redis://localhost:6379"
+    redis_url="redis://localhost:6379",
 )
-
-pool.start()  # Blocks until interrupted
+pool.start()   # blocks until pool.stop() or SIGTERM
 ```
 
-## Result Backend
+---
 
-Store and retrieve task results.
+## Task options
 
 ```python
-from broccoli.core.result import ResultBackend
+from broccoli.core.task.task import Task
 
-backend = ResultBackend(redis_url="redis://localhost:6379")
-
-# Store result with TTL (24 hours default)
-backend.store("task-123", {"status": "completed"}, ttl=86400)
-
-# Retrieve result
-result = backend.get("task-123")
-```
-
-## CLI Reference
-
-```bash
-# Show help
-python -m broccoli.cli --help
-
-# Worker types
---worker-type {base,threaded,async,hybrid}  # Default: threaded
-
-# Common options
---redis-url REDIS_URL                       # Default: redis://localhost:6379
---worker-id WORKER_ID                       # Custom worker identifier
-
-# Pool options
---pool                                      # Run worker pool
---num-workers N                             # Number of workers (default: 4)
-
-# Worker-specific options
---concurrency N                             # Threads for threaded/hybrid or async tasks
---async-tasks N                             # Async tasks for hybrid (default: 10)
---thread-workers N                          # Thread pool for hybrid (default: 4)
-
-# Examples
-python -m broccoli.cli --worker-type threaded --concurrency 4
-python -m broccoli.cli --worker-type async --concurrency 10
-python -m broccoli.cli --pool --worker-type base --num-workers 3
-python -m broccoli.cli --pool --worker-type threaded --num-workers 5 --concurrency 2
-```
-
-## Architecture
-
-```
-┌──────────────┐     ┌─────────────┐     ┌──────────────┐
-│  Producer    │────▶│    Redis     │────▶│   Worker     │
-│  (pushes     │     │  (queue +    │     │  (processes  │
-│   tasks)     │     │   results)   │     │   tasks)     │
-└──────────────┘     └─────────────┘     └──────────────┘
-                                                     │
-                                                     ▼
-                                           ┌──────────────┐
-                                           │   Task       │
-                                           │   Handlers   │
-                                           │  (your code) │
-                                           └──────────────┘
-```
-
-## Task Lifecycle
-
-```
-1. pending      → Task created and pushed to queue
-2. in_progress  → Worker pops task and starts processing
-3. completed    → Processing successful
-4. failed       → Processing failed or max retries exceeded
-5. retry        → Failed but retries remaining, requeued
-```
-
-## Error Handling
-
-### Automatic Retries
-
-```python
 task = Task(
-    task_type="unreliable_operation",
-    payload={...},
-    max_retries=5  # Try 5 times
+    task_type="my_task",
+    payload={"key": "value"},
+    max_retries=3,          # default: 0 (no retry)
+    depends_on="<task_id>", # optional: block until this task completes
 )
 ```
 
-### Manual Error Handling
+### Priority
+
+Lower number = higher priority. Default is `0`.
 
 ```python
-@registry.register("safe_operation")
-def safe_operation(payload):
-    try:
-        result = process_data(payload["data"])
-        return result
-    except ConnectionError as e:
-        raise  # Worker handles retry
-    except ValueError as e:
-        raise ValueError(f"Invalid data: {e}")  # Permanent failure
+queue.push(urgent_task, priority=0)   # processed first
+queue.push(normal_task, priority=1)
+queue.push(low_task,    priority=5)
 ```
 
-## Best Practices
+Tasks with the same priority are processed in FIFO order.
 
-### Task Design
-**DO:** Keep tasks small and focused
+### Dependencies
+
+A task with `depends_on` will not run until its parent task completes.
+
 ```python
-@registry.register("process_order")
-def process_order(payload):
-    return create_order(payload)
+step1 = Task(task_type="extract",   payload={...})
+step2 = Task(task_type="transform", payload={...}, depends_on=step1.task_id)
+step3 = Task(task_type="load",      payload={...}, depends_on=step2.task_id)
+
+queue.push(step1)
+queue.push(step2)
+queue.push(step3)
+# step2 runs only after step1 completes; step3 only after step2
 ```
 
-**DON'T:** Do everything in one task
+---
+
+## Lifecycle hooks
+
+Register functions to run at specific points in a task's lifecycle. All registration methods return `self` for chaining.
+
 ```python
-@registry.register("process_order")
-def process_order(payload):
-    validate_order(payload)
-    process_payment(payload)
-    send_confirmation(payload)
-    update_inventory(payload)
-    return {"status": "done"}
+worker = MyWorker(redis_url="redis://localhost:6379")
+
+# Method-style registration
+worker.add_completion_handler(lambda task, result: print(f"Done: {result}"))
+worker.add_failure_handler(lambda task, err: alert(str(err)))
+worker.add_pre_process_handler(lambda task: task.payload.get("enabled", True))
+worker.add_post_process_handler(lambda task, success: metrics.record(success))
+
+# Chained registration
+worker \
+    .add_completion_handler(notify_slack) \
+    .add_failure_handler(notify_pagerduty)
+
+# Decorator-style registration
+@worker.on_complete
+def on_done(task, result):
+    print(f"Task {task.task_id} finished with: {result}")
+
+@worker.on_failure
+def on_fail(task, error):
+    logger.error(f"Task {task.task_id} failed: {error}")
 ```
 
-### Idempotency
-Make tasks safe to run multiple times:
+Pre-process handlers can abort a task by returning `False`:
+
 ```python
-@registry.register("create_record")
-def create_record(payload):
-    record_id = payload["record_id"]
-    existing = db.find(record_id)
-    if existing:
-        return {"status": "already_exists", "record": existing}
-    record = db.create(record_id, payload["data"])
-    return {"status": "created", "record": record}
+@worker.on_pre_process
+def gate(task):
+    if task.payload.get("dry_run"):
+        return False  # skip this task
+    return True
 ```
 
-## Production Deployment
+---
 
-### Docker
+## Chain tasks
 
-```dockerfile
-FROM python:3.9-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-COPY . .
-CMD ["python", "-m", "broccoli.cli", "--worker-type", "threaded", "--concurrency", "4"]
+For multi-step pipelines, use `ChainWorker`. Each step in the chain carries a `__chain_id` in its payload; the final result is stored atomically when the last step completes.
+
+```python
+from broccoli.workers.chain_worker import ChainWorker
+
+worker = ChainWorker(redis_url="redis://localhost:6379")
+worker.registry.register("step_a", do_a)
+worker.registry.register("step_b", do_b)
+worker.start()
 ```
 
-```yaml
-# docker-compose.yml
-version: '3.8'
-services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-  worker:
-    build: .
-    depends_on:
-      - redis
-    environment:
-      - REDIS_URL=redis://redis:6379
-    deploy:
-      replicas: 3
+---
+
+## Crash recovery
+
+If a worker process dies mid-task, the task remains in the `tasks:processing` sorted set indefinitely. Call `recover_stalled` on startup (or on a schedule) to re-enqueue any tasks that have been in-flight longer than expected:
+
+```python
+queue = TaskQueue(redis_url="redis://localhost:6379")
+recovered = queue.recover_stalled(timeout_seconds=3600)
+print(f"Re-enqueued {recovered} stalled tasks")
 ```
 
-## Configuration
+---
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `redis_url` | redis://localhost:6379 | Redis connection URL |
-| `max_retries` | 3 | Maximum task retry attempts |
-| `task_timeout` | 3600 | Task timeout in seconds |
-| `max_concurrent` | 10 | Async worker concurrency |
-| `max_workers` | 4 | Threaded worker thread count |
-| `thread_workers` | 4 | Hybrid worker thread pool |
-| `async_tasks` | 10 | Hybrid worker async concurrency |
+## Logging
 
-## License
+Broccoli uses the standard `logging` module under the `broccoli` namespace. Configure it in your application:
 
-MIT License
-
-
-**Made with ❤️ for developers who need a simple, powerful task queue**
+```python
+import logging
+logging.basicConfig(level=logging.INFO)
 ```
