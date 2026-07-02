@@ -138,7 +138,10 @@ class TaskQueue:
 
         task_data = self._redis.hgetall(f"{self.task_prefix}:{task_id}")
         if not task_data:
-            logger.warning(f"Task data missing for {task_id!r}; dropping from queue")
+            logger.error(
+                f"Task data missing for {task_id!r}; moving to dead-letter set"
+            )
+            self._redis.sadd(f"{self.task_prefix}:dead_letter", task_id)
             return None
 
         # Score in the processing set is a Unix timestamp so recover_stalled()
@@ -182,14 +185,23 @@ class TaskQueue:
         """Remove a permanently failed (or skipped) task from the processing set."""
         self._redis.zrem(self.processing_key, task.task_id)
 
-    def requeue(self, task_id: str, priority: int = 0) -> None:
+    def requeue(self, task_id: str, priority: Optional[int] = None) -> None:
         """
         Move a task from the processing set back to the runnable queue (retry).
 
         A fresh FIFO sequence number is issued so the retry goes to the back of
         its priority tier rather than jumping the queue.
+
+        If ``priority`` isn't given explicitly, the task's originally-requested
+        priority (stashed under ``_PRIORITY_FIELD`` at push time) is restored,
+        matching the behaviour of ``complete()`` when it releases dependents.
+        Without this, every retry would silently reset to priority 0 and could
+        jump ahead of lower-priority tasks still waiting in the queue.
         """
         self._redis.zrem(self.processing_key, task_id)
+        if priority is None:
+            raw_pri = self._redis.hget(f"{self.task_prefix}:{task_id}", _PRIORITY_FIELD)
+            priority = int(raw_pri) if raw_pri else 0
         self._enqueue(task_id, priority)
 
     def recover_stalled(self, timeout_seconds: int = 3600) -> int:
@@ -247,7 +259,10 @@ class TaskQueue:
         seq = self._redis.incr(self.sequence_key)
         score = priority * _FIFO_TIER_SIZE + seq
         self._redis.zadd(self.queue_key, {task_id: score})
-        self._redis.hset(f"{self.task_prefix}:{task_id}", "status", "pending")
+        self._redis.hset(
+            f"{self.task_prefix}:{task_id}",
+            mapping={"status": "pending", _PRIORITY_FIELD: str(priority)},
+        )
         logger.debug(f"Enqueued task {task_id} (priority={priority}, seq={seq})")
 
     def is_fully_drained(self) -> bool:
@@ -257,3 +272,28 @@ class TaskQueue:
         pipe.zcard(self.processing_key)
         runnable, processing = pipe.execute()
         return runnable == 0 and processing == 0
+
+    def get_waiting_for(self, task_id: str) -> list:
+        """Return the IDs of tasks currently blocked on ``task_id``."""
+        return [
+            tid.decode() if isinstance(tid, bytes) else tid
+            for tid in self._redis.smembers(f"dependency:{task_id}")
+        ]
+
+    def stats(self) -> dict:
+        """
+        Snapshot of queue depth for monitoring/diagnostics.
+
+        ``dead_letter`` reflects tasks whose hash went missing on pop() —
+        see ``pop()`` for how they get there.
+        """
+        pipe = self._redis.pipeline()
+        pipe.zcard(self.queue_key)
+        pipe.zcard(self.processing_key)
+        pipe.scard(f"{self.task_prefix}:dead_letter")
+        runnable, processing, dead_letter = pipe.execute()
+        return {
+            "runnable": runnable,
+            "processing": processing,
+            "dead_letter": dead_letter,
+        }

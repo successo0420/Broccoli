@@ -78,9 +78,8 @@ class ChainWorker(ChainWorkerMixin, BaseWorker):
         for task in tasks:
             task_id = task.get("task_id")
             if task_id:
-                self._redis.delete(f"chain:{task_id}")
-                self._redis.delete(f"task:{task_id}")
-                logger.debug(f"Deleted task hashes for {task_id}")
+                self._redis.delete(f"{self.task_prefix}:{task_id}")
+                logger.debug(f"Deleted task hash for {task_id}")
 
         self._redis.delete(f"chain:{chain_id}")
         self._redis.delete(f"chain:{chain_id}:tasks")

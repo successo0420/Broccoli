@@ -1,9 +1,12 @@
 # broccoli/workers/base_worker.py
 import logging
+import signal
 import time
 from abc import ABC
 from datetime import datetime
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List
+
+import redis
 
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.result import ResultBackend
@@ -154,6 +157,21 @@ class BaseWorker(ABC):
         if task.status == "pending":
             return
 
+        # On permanent failure, record the task in a dead-letter set *before*
+        # touching result storage or deleting its hash, so it stays
+        # inspectable/re-queueable even if result.store_task() below raises
+        # (e.g. a Redis error) and the hash still ends up deleted.
+        if task.status == "failed":
+            try:
+                self._redis.zadd(
+                    f"{self.task_prefix}:dead_letter", {task.task_id: time.time()}
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to record {task.task_id} in dead-letter set: {e}",
+                    exc_info=True,
+                )
+
         # Persist result and remove the task metadata hash.
         self.result.store_task(task)
         self._redis.delete(f"{self.task_prefix}:{task.task_id}")
@@ -240,13 +258,27 @@ class BaseWorker(ABC):
     # ============ Worker Loop ============
 
     def start(self):
-        """Start the blocking worker loop."""
+        """
+        Start the blocking worker loop.
+
+        NOTE — ``task_timeout`` is NOT enforced here. This loop runs
+        ``self.process(task)`` synchronously on the only thread the worker
+        has; there is no clean, non-hacky way to abort a running Python
+        function from another thread (killing threads is unsafe/unsupported
+        in CPython). ThreadedWorker, AsyncWorker, and HybridWorker all
+        enforce ``task_timeout`` because they have a spare thread/event loop
+        to wait on. If you need timeout enforcement, use one of those
+        instead of the plain BaseWorker loop.
+        """
+        self._register_signal_handlers()
         self.running = True
         logger.info(f"Worker {self.worker_id} started")
 
+        backoff = 1
         while self.running:
             try:
                 task = self.queue.pop()
+                backoff = 1  # reset after any successful Redis round-trip
                 if task is None:
                     continue
 
@@ -265,6 +297,13 @@ class BaseWorker(ABC):
                 self._handle_task_result(task, success)
                 self.post_process(task, success)
 
+            except redis.exceptions.RedisError as e:
+                logger.error(
+                    f"Worker {self.worker_id} Redis error: {e}, retrying in {backoff}s",
+                    exc_info=True,
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 60)
             except Exception as e:
                 logger.error(
                     f"Worker {self.worker_id} encountered error: {e}", exc_info=True
@@ -276,6 +315,25 @@ class BaseWorker(ABC):
     def _stop_handler(self, signum, frame):
         logger.info(f"Worker {self.worker_id} received stop signal")
         self.running = False
+
+    def _register_signal_handlers(self):
+        """
+        Register SIGINT/SIGTERM to call ``_stop_handler``.
+
+        ``signal.signal`` only works from the main thread — when a worker is
+        run inside ``WorkerPool`` it lives on a background daemon thread, so
+        we skip registration there and rely on ``WorkerPool`` catching the
+        signal itself and calling ``stop()`` on each worker instead.
+        """
+        import threading
+
+        if threading.current_thread() is not threading.main_thread():
+            return
+        try:
+            signal.signal(signal.SIGINT, self._stop_handler)
+            signal.signal(signal.SIGTERM, self._stop_handler)
+        except (ValueError, OSError) as e:
+            logger.debug(f"Could not register signal handlers: {e}")
 
     def stop(self):
         self.running = False

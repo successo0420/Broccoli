@@ -1,9 +1,16 @@
 # broccoli/workers/hybrid_worker.py
+# See async_worker.py: this defers evaluation of the `X | None` /
+# lowercase-generic hints below so they don't raise on Python 3.9.
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+
+import redis
 
 from broccoli.core.task.task import Task
 from broccoli.workers.base_worker import BaseWorker
@@ -65,11 +72,28 @@ class HybridWorker(BaseWorker):
         """
         async with self._semaphore:
             try:
+                # pre_process is checked before entering the thread pool so a
+                # skip (returns False) can be routed to queue.fail() directly,
+                # rather than being indistinguishable from a real processing
+                # failure and consuming retry budget in _handle_hybrid_result.
+                if not self.pre_process(task):
+                    logger.info(f"Task {task.task_id} skipped by pre_process")
+                    self.queue.fail(task)
+                    return
+
                 # Use get_running_loop() — get_event_loop() is deprecated in 3.10+.
                 loop = asyncio.get_running_loop()
-                success = await loop.run_in_executor(
-                    self.thread_pool, self._process_sync, task
-                )
+                try:
+                    success = await asyncio.wait_for(
+                        loop.run_in_executor(self.thread_pool, self.process, task),
+                        timeout=self.task_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(
+                        f"Task {task.task_id} timed out after {self.task_timeout}s"
+                    )
+                    task.error = f"Task timed out after {self.task_timeout}s"
+                    success = False
                 self._handle_hybrid_result(task, success)
             except Exception as e:
                 logger.error(f"Hybrid task {task.task_id} failed: {e}", exc_info=True)
@@ -77,12 +101,6 @@ class HybridWorker(BaseWorker):
                 self._handle_hybrid_result(task, False)
             finally:
                 self.active_tasks.discard(task.task_id)
-
-    def _process_sync(self, task: Task) -> bool:
-        """Blocking processing step — runs inside the thread pool."""
-        if not self.pre_process(task):
-            return False
-        return self.process(task)
 
     def _handle_hybrid_result(self, task: Task, success: bool) -> None:
         """
@@ -122,6 +140,20 @@ class HybridWorker(BaseWorker):
                 # post_process still runs for registered post-process handlers.
                 self.post_process(task, success)
                 return
+
+        # On permanent failure, record in the dead-letter set before result
+        # storage/cleanup so the task stays inspectable even if _save_result
+        # raises.
+        if task.status == "failed":
+            try:
+                self._redis.zadd(
+                    f"{self.task_prefix}:dead_letter", {task.task_id: time.time()}
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to record {task.task_id} in dead-letter set: {e}",
+                    exc_info=True,
+                )
 
         # Persist extended result metadata with TTL.
         self._save_result(task)
@@ -182,6 +214,7 @@ class HybridWorker(BaseWorker):
 
     def start(self):
         """Create a fresh event loop and run until stopped."""
+        self._register_signal_handlers()
         self.running = True
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
@@ -197,13 +230,25 @@ class HybridWorker(BaseWorker):
     async def _run_hybrid(self):
         self._semaphore = asyncio.Semaphore(self.async_tasks)
 
+        backoff = 1
         while self.running:
             if len(self.active_tasks) >= self.async_tasks:
                 await asyncio.sleep(0.05)
                 continue
 
-            loop = asyncio.get_running_loop()
-            task = await loop.run_in_executor(None, self.queue.pop_with_timeout, 1)
+            try:
+                loop = asyncio.get_running_loop()
+                task = await loop.run_in_executor(None, self.queue.pop_with_timeout, 1)
+                backoff = 1  # reset after any successful Redis round-trip
+            except redis.exceptions.RedisError as e:
+                logger.error(
+                    f"HybridWorker {self.worker_id} Redis error: {e}, "
+                    f"retrying in {backoff}s",
+                    exc_info=True,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60)
+                continue
 
             if task is None:
                 await asyncio.sleep(0.05)

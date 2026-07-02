@@ -303,7 +303,8 @@ def test_basic_worker():
 
     @worker.on_complete
     def handle_completion(task, result):
-        worker.stop()  # Stop the worker after chain completion
+        if queue.is_fully_drained():
+            worker.stop()  # Stop the worker after chain completion
 
     # Push tasks
     tasks = []
@@ -351,10 +352,10 @@ def test_dependency_worker():
     files = create_test_files()
     worker = ThreadedWorker(max_workers=2)
 
-    # @worker.on_complete
-    # def handle_completion(task, result):
-    #     if worker.queue.is_empty():
-    #         worker.stop()  # Stop the worker after chain completion
+    @worker.on_complete
+    def handle_completion(task, result):
+        if queue.is_fully_drained():
+            worker.stop()  # Stop the worker after chain completion
 
     # Task 1: Check if file exists
     task1 = Task(task_type="check_if_file_exists", payload={"file_path": files[0]})
@@ -389,12 +390,13 @@ def test_async_worker_io_intensive():
     """Test AsyncWorker with I/O intensive tasks."""
     print("\n=== TEST 4: AsyncWorker (I/O Intensive) ===")
 
-    test_dir, files = create_test_files()
-    worker = AsyncWorker(10)
+    files = create_test_files()
+    worker = AsyncWorker(max_concurrent=10)
 
     @worker.on_complete
     def handle_completion(task, result):
-        worker.stop()  # Stop the worker after chain completion
+        if queue.is_fully_drained():
+            worker.stop()  # Stop the worker after chain completion
 
     # Push many I/O tasks
     tasks = []
@@ -459,19 +461,16 @@ def test_worker_pool():
     """Test WorkerPool with multiple workers."""
     print("\n=== TEST 6: WorkerPool ===")
 
-    test_dir, files = create_test_files()
-
     pool = WorkerPool(
         worker_type=ThreadedWorker, num_workers=3, redis_url="redis://localhost:6379"
     )
 
-    # for worker in pool.workers:
+    for worker in pool.workers:
 
-    #     @worker.on_complete
-    #     def handle_completion(task, result):
-    #         # Stop the pool when all tasks are done
-    #         if queue.is_empty():
-    #             pool.shutdown_flag.set()  # Signal shutdown
+        @worker.on_complete
+        def handle_completion(task, result):
+            if queue.is_fully_drained():
+                worker.stop()  # Stop the worker after chain completion
 
     # Push many tasks
     for i in range(15):
@@ -493,7 +492,8 @@ def test_complex_chain_with_dependencies():
 
     @worker.on_complete
     def handle_completion(task, result):
-        worker.stop()  # Stop the worker after chain completion
+        if queue.is_fully_drained():
+            worker.stop()  # Stop the worker after chain completion
 
     # Chain: duplicate check → hash → copy → notify
     chain_id = chain.chain(
@@ -545,9 +545,9 @@ def run_all_tests():
         # test_chain_worker,
         # test_dependency_worker,
         # test_async_worker_io_intensive,
-        test_hybrid_worker_mixed,
+        # test_hybrid_worker_mixed,
         # test_worker_pool,
-        # test_complex_chain_with_dependencies,
+        test_complex_chain_with_dependencies,
     ]
 
     for test_func in test_functions:

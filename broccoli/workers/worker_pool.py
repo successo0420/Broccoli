@@ -1,5 +1,6 @@
 # broccoli/workers/worker_pool.py
 import logging
+import signal
 import threading
 from typing import List
 
@@ -23,10 +24,12 @@ class WorkerPool:
         worker_type: type = BaseWorker,
         num_workers: int = 4,
         redis_url: str = "redis://localhost:6379",
+        **worker_kwargs,
     ):
         self.worker_type = worker_type
         self.num_workers = num_workers
         self.redis_url = redis_url
+        self.worker_kwargs = worker_kwargs  # e.g. max_workers=, max_concurrent=
         self.workers: List[BaseWorker] = []  # initialised before _create_workers runs
         self.threads: List[threading.Thread] = []
         self.running = False
@@ -37,7 +40,9 @@ class WorkerPool:
         """Instantiate ``num_workers`` workers and append them to ``self.workers``."""
         for i in range(self.num_workers):
             worker = self.worker_type(
-                redis_url=self.redis_url, worker_id=f"worker-{i + 1}"
+                redis_url=self.redis_url,
+                worker_id=f"worker-{i + 1}",
+                **self.worker_kwargs,
             )
             self.workers.append(worker)
 
@@ -46,7 +51,18 @@ class WorkerPool:
         Spawn one daemon thread per worker, then block until a shutdown signal
         arrives (``stop()`` or a signal handler calling ``_signal_handler``).
         """
+        # Reset per-cycle state so repeated start()/stop() cycles (e.g. in
+        # tests) don't accumulate dead threads from a previous run or get
+        # stuck on an already-set flag from a prior shutdown.
+        self.threads = []
+        self.shutdown_flag.clear()
         self.running = True
+
+        try:
+            signal.signal(signal.SIGINT, self._signal_handler)
+            signal.signal(signal.SIGTERM, self._signal_handler)
+        except (ValueError, OSError) as e:
+            logger.debug(f"Could not register signal handlers: {e}")
 
         for i, worker in enumerate(self.workers):
             thread = threading.Thread(
@@ -70,6 +86,10 @@ class WorkerPool:
     def stop(self):
         """Gracefully stop all workers and join their threads."""
         logger.info("Stopping all workers...")
+
+        # Set first so a direct stop() call (e.g. from a test or a completion
+        # handler) also unblocks start(), which may be parked on this wait().
+        self.shutdown_flag.set()
 
         for worker in self.workers:
             try:
