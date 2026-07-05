@@ -6,6 +6,7 @@ import time
 import uuid
 from pathlib import Path
 
+from broccoli.core.chain.chain_queue import ChainQueue
 from broccoli.core.chain.task_chain import TaskChain
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.task.task import Task
@@ -487,7 +488,7 @@ def test_complex_chain_with_dependencies():
     print("\n=== TEST 7: Complex Chain with Dependencies ===")
 
     files = create_test_files()
-
+    queue = ChainQueue()
     worker = ChainWorker()
 
     @worker.on_complete
@@ -516,10 +517,6 @@ def test_complex_chain_with_dependencies():
                     "email": "admin@example.com",
                     "message": "Complex processing completed",
                 },
-            },
-            {
-                "task_type": "tasks_complete",
-                "payload": {},
             },
         ],
     )
