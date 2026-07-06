@@ -232,3 +232,315 @@ Broccoli uses the standard `logging` module under the `broccoli` namespace. Conf
 import logging
 logging.basicConfig(level=logging.INFO)
 ```
+
+# Command-Line Interface (CLI)
+
+Broccoli ships with a powerful CLI for starting workers, inspecting queues, managing failed tasks, and monitoring chains – all from the terminal.
+
+---
+
+## Installation
+
+Make the CLI executable and available on your `PATH`:
+
+```bash
+chmod +x broccoli/cli.py
+# Optionally symlink it:
+ln -s $(pwd)/broccoli/cli.py /usr/local/bin/broccoli
+```
+
+Or run it directly via Python:
+
+```bash
+python -m broccoli.cli --help
+```
+
+---
+
+## Global Options
+
+| Flag | Description |
+|------|-------------|
+| `-v`, `--verbose` | Increase logging verbosity (`-v` for INFO, `-vv` for DEBUG). |
+| `--help` | Show help for any command or subcommand. |
+
+All subcommands also respect environment variables for common settings:
+
+| Env Variable | Default | Used For |
+|--------------|---------|----------|
+| `BROCCOLI_REDIS_URL` | `redis://localhost:6379` | Redis connection string |
+| `BROCCOLI_QUEUE_NAME` | `tasks:queue` | Regular task queue name |
+| `BROCCOLI_CHAIN_QUEUE_NAME` | `chain_tasks:queue` | Chain task queue name |
+| `BROCCOLI_TASK_PREFIX` | `task` | Redis key prefix for task hashes |
+
+---
+
+## Worker Management
+
+### Start a single worker
+
+```bash
+# Threaded worker with 8 threads
+broccoli worker start --type threaded --concurrency 8
+
+# Async worker with 20 concurrent tasks
+broccoli worker start --type async --concurrency 20
+
+# Hybrid worker (threads for CPU + asyncio for I/O)
+broccoli worker start --type hybrid --thread-workers 4 --async-tasks 10
+
+# Chain worker (for task chains)
+broccoli worker start --type chain
+```
+
+### Start a worker pool
+
+```bash
+# Pool of 4 threaded workers
+broccoli worker start --type threaded --pool --num-workers 4
+
+# Pool of 3 async workers
+broccoli worker start --type async --pool --num-workers 3
+```
+
+### Recover stalled tasks on startup
+
+```bash
+# Re-enqueue any tasks that have been in-flight for > 3600 seconds
+broccoli worker start --type threaded --recover-stalled 3600
+```
+
+### Advanced: custom queue names
+
+```bash
+broccoli worker start --type threaded \
+    --queue-name myapp:queue \
+    --chain-queue-name myapp:chain \
+    --task-prefix myapp
+```
+
+---
+
+## Queue Inspection
+
+### View queue statistics
+
+```bash
+broccoli queue stats
+```
+
+Output:
+```
+runnable: 12
+processing: 3
+dead_letter: 2
+```
+
+With JSON output:
+```bash
+broccoli queue stats --format json
+```
+
+### List tasks by status
+
+```bash
+# Pending tasks (ready to run)
+broccoli queue list --status pending --limit 10
+
+# In-progress tasks
+broccoli queue list --status in_progress
+
+# All tasks (scan all task hashes – use with care on large queues)
+broccoli queue list --status all --limit 20
+```
+
+### Get a specific task
+
+```bash
+broccoli queue get <task_id>
+```
+
+Returns full task metadata (payload, result, error, retries, etc.).
+
+### Show tasks waiting for a parent
+
+```bash
+# See which tasks are blocked on a particular task
+broccoli queue waiting <parent_task_id>
+```
+
+This is invaluable for debugging dependency deadlocks.
+
+---
+
+## Dead-Letter Management
+
+When tasks exhaust all retries, they are moved to the dead‑letter set for manual inspection and retry.
+
+### List dead-letter tasks
+
+```bash
+broccoli dead list
+```
+
+Shows task IDs and the timestamp when they failed.
+
+### Requeue a dead task
+
+```bash
+broccoli dead requeue <task_id>
+```
+
+This resets the retry count to `0` and pushes the task back to the runnable queue.
+
+---
+
+## Chain Inspection
+
+### Get chain status
+
+```bash
+broccoli chain status <chain_id>
+```
+
+Returns:
+```json
+{
+  "chain_id": "abc-123",
+  "total_tasks": 5,
+  "completed_tasks": 3,
+  "current_task": 3,
+  "status": "in_progress",
+  "failed": false
+}
+```
+
+### List all tasks in a chain
+
+```bash
+broccoli chain tasks <chain_id>
+```
+
+Shows the full task configuration for every step in the chain, including payloads and task IDs.
+
+---
+
+## Health Check
+
+Useful for monitoring systems (e.g., Kubernetes liveness probes).
+
+```bash
+broccoli health
+```
+
+- Exits with `0` if Redis is reachable and basic queue operations work.
+- Exits with `1` and prints an error on failure.
+
+Example with `curl`‑style usage:
+```bash
+if broccoli health; then
+    echo "Broccoli is ready"
+else
+    echo "Broccoli is unhealthy" >&2
+    exit 1
+fi
+```
+
+---
+
+## Output Formats
+
+All inspection commands support two output formats:
+
+- **`table`** (default) – human‑readable, aligned columns.
+- **`json`** – machine‑readable, ideal for scripting and APIs.
+
+```bash
+# Human‑readable
+broccoli queue stats
+
+# Machine‑readable
+broccoli queue stats --format json
+```
+
+---
+
+## Complete Usage Examples
+
+### Development workflow
+
+Start a single threaded worker with verbose logging:
+```bash
+broccoli -v worker start --type threaded --concurrency 4
+```
+
+### Production deployment (systemd / supervisor)
+
+```bash
+# Start a pool of 8 async workers, recovering stalled tasks
+broccoli worker start --type async --pool --num-workers 8 \
+    --concurrency 10 --recover-stalled 3600
+```
+
+### Debugging a stuck workflow
+
+1. Check if tasks are waiting:
+   ```bash
+   broccoli queue waiting <parent_id>
+   ```
+
+2. Inspect the task that isn't progressing:
+   ```bash
+   broccoli queue get <task_id>
+   ```
+
+3. If a task failed permanently, requeue it:
+   ```bash
+   broccoli dead list
+   broccoli dead requeue <failed_task_id>
+   ```
+
+4. Monitor chain progress:
+   ```bash
+   broccoli chain status <chain_id>
+   ```
+
+### Automation / scripting
+
+Export settings once:
+```bash
+export BROCCOLI_REDIS_URL="redis://prod-cluster:6379"
+export BROCCOLI_QUEUE_NAME="video:queue"
+```
+
+Then run commands without repeating arguments:
+```bash
+broccoli queue stats --format json
+broccoli dead list
+```
+
+---
+
+## CLI Reference
+
+| Command | Description |
+|---------|-------------|
+| `worker start` | Start a worker (or pool) with the specified type and concurrency. |
+| `queue stats` | Show runnable, processing, and dead‑letter counts. |
+| `queue list` | List tasks filtered by status (pending, in_progress, etc.). |
+| `queue get <id>` | Fetch and display a task's full metadata. |
+| `queue waiting <parent_id>` | Show tasks blocked on a given parent. |
+| `dead list` | List all permanently failed tasks. |
+| `dead requeue <id>` | Re‑enqueue a failed task (retry). |
+| `chain status <id>` | Show completion progress of a task chain. |
+| `chain tasks <id>` | List all steps in a chain. |
+| `health` | Check Redis connectivity and queue health. |
+
+For detailed options on any command, use `--help`:
+
+```bash
+broccoli worker start --help
+broccoli queue list --help
+```
+
+---
