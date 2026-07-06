@@ -325,10 +325,12 @@ def test_chain_worker():
     files = create_test_files()
 
     worker = ChainWorker()
+    queue = ChainQueue()
 
     @worker.on_complete
     def handle_completion(task, result):
-        worker.stop()  # Stop the worker after chain completion
+        if queue.is_fully_drained():
+            worker.stop()  # Stop the worker after chain completion
 
     # Create chain: validate → compress → upload
     chain_id = chain.chain(
@@ -471,7 +473,7 @@ def test_worker_pool():
         @worker.on_complete
         def handle_completion(task, result):
             if queue.is_fully_drained():
-                worker.stop()  # Stop the worker after chain completion
+                pool.stop()  # Stop the worker after chain completion
 
     # Push many tasks
     for i in range(15):
@@ -538,12 +540,12 @@ def run_all_tests():
     print("=" * 60)
 
     test_functions = [
-        # test_basic_worker,
-        # test_chain_worker,
-        # test_dependency_worker,
-        # test_async_worker_io_intensive,
-        # test_hybrid_worker_mixed,
-        # test_worker_pool,
+        test_basic_worker,
+        test_chain_worker,
+        test_dependency_worker,
+        test_async_worker_io_intensive,
+        test_hybrid_worker_mixed,
+        test_worker_pool,
         test_complex_chain_with_dependencies,
     ]
 

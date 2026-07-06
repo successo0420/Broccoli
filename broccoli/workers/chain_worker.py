@@ -56,7 +56,7 @@ class ChainWorker(ChainWorkerMixin, BaseWorker):
         chain_id = payload.get("chain_id")
         final_result = payload.get("result")
 
-        chain = Chain.from_dict(self._redis.hgetall(f"chain:{chain_id}"))
+        chain = Chain.from_dict(self._redis.hgetall(f"{self.task_prefix}:{chain_id}"))
         chain.result = final_result
         self.result_backend.store_chain(chain)
         self.cleanup(chain_id)
@@ -69,7 +69,7 @@ class ChainWorker(ChainWorkerMixin, BaseWorker):
         methods (``complete`` / ``fail``) as each step finished — this method
         only deletes leftover hash keys.
         """
-        tasks_raw = self._redis.get(f"chain:{chain_id}:tasks")
+        tasks_raw = self._redis.get(f"{self.task_prefix}:{chain_id}:tasks")
         if not tasks_raw:
             logger.warning(f"No task list found for chain {chain_id} during cleanup")
             return
@@ -81,8 +81,9 @@ class ChainWorker(ChainWorkerMixin, BaseWorker):
                 self._redis.delete(f"{self.task_prefix}:{task_id}")
                 logger.debug(f"Deleted task hash for {task_id}")
 
-        self._redis.delete(f"chain:{chain_id}")
-        self._redis.delete(f"chain:{chain_id}:tasks")
+        self._redis.delete(f"{self.task_prefix}:{chain_id}")
+        self._redis.delete(f"{self.task_prefix}:{chain_id}:tasks")
+        # self._redis.delete(f"{self.queue.base}:sequence")
         logger.info(f"Chain {chain_id} cleaned up")
 
     def on_finish(self, chain_id: str, final_result) -> None:

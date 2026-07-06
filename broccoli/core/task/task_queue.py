@@ -51,6 +51,7 @@ class TaskQueue:
             if queue_name.endswith(":queue")
             else queue_name
         )
+        self.base = base
         self.processing_key = f"{base}:processing"
         self.sequence_key = f"{base}:sequence"
 

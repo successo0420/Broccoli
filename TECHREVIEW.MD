@@ -87,57 +87,6 @@ Asyncio controls concurrency; a dedicated `ThreadPoolExecutor` runs the blocking
 
 Spawns N instances of any worker type, each in a daemon thread. The `shutdown_flag` event blocks the calling thread until `stop()` or a signal handler fires. Workers created in `__init__` are not re-created in `start()` (that was the original bug — double instantiation).
 
----
-
-## Bugs fixed in this revision
-
-### 1. Requeue destroyed task data (critical)
-
-`post_process` unconditionally deleted the task hash and stored the result, including for tasks that had just been requeued for retry. The next worker to pop the requeued task would call `hgetall` and get an empty dict, causing it to be silently dropped.
-
-Fix: `post_process` checks `task.status`. If it is `"pending"` (meaning the task was requeued), it returns early. Only terminal states (`"completed"`, `"failed"`) trigger result storage and hash cleanup.
-
-### 2. HybridWorker fired completion handlers twice (critical)
-
-`_handle_hybrid_result` called `_run_completion_handlers` then called `post_process`, which called them again via `BaseWorker.post_process`. Every user callback registered with `add_completion_handler` or `@worker.on_complete` fired twice per task. The result was also stored twice, to two different backends.
-
-Fix: `HybridWorker` overrides `post_process` to run only the registered post-process handlers (`_run_post_process_handlers`). Result storage, hash cleanup, and completion/failure callbacks remain exclusively in `_handle_hybrid_result`.
-
-### 3. _update_task called after queue.complete() (important)
-
-In the original `_handle_task_result`, `queue.complete()` was called before `_update_task`. When `complete()` released waiting dependents into the queue and a fast worker popped one immediately, a concurrent `push()` checking the parent's status would still see `"in_progress"` in Redis. This could cause the new task to register as waiting on a parent that would never release it.
-
-Fix: `_update_task` (which writes `"completed"` to the task hash) is called before `queue.complete()` in all workers. The parent is visible as completed before any dependent can be popped.
-
-### 4. recover_stalled had an unusable interface (important)
-
-The processing set used FIFO scores (`priority * 10^12 + seq`) as its sort key. `recover_stalled(max_score)` asked callers to compute a threshold from that score space, which has no relationship to wall-clock time. There was no practical way to call it correctly.
-
-Fix: `pop()` now stores `time.time()` as the score when adding a task to the processing set. `recover_stalled(timeout_seconds)` computes `time.time() - timeout_seconds` as the threshold — straightforward and self-contained.
-
-### 5. Dependency race condition — check-then-register (important)
-
-The original `push()` read the parent's status, then registered in the dependency set. If the parent completed between those two steps, `complete()` would see an empty dependency set and the new task would be stuck in `"waiting"` forever.
-
-Fix: `push()` now registers in the dependency set first, then reads the parent's status. If the parent is already `"completed"`, the task removes itself from the set and enqueues directly.
-
-### 6. WorkerPool double-instantiated workers (important)
-
-`_create_workers()` appended to `self.workers`, but in `__init__` that attribute didn't exist yet — it was being assigned the return value of the method that needed it. This would raise `AttributeError`. `start()` then called `_create_workers()` a second time, doubling the pool.
-
-Fix: `self.workers = []` is set in `__init__` before `_create_workers()` is called. `start()` no longer calls `_create_workers()`.
-
-### 7. asyncio.get_event_loop() deprecated in Python 3.10+ (minor)
-
-`get_event_loop()` emits a `DeprecationWarning` in Python 3.10+ when called inside a running coroutine, and its behaviour changed in 3.12. All async methods now use `asyncio.get_running_loop()`.
-
-### 8. Released dependents always used priority 0 (minor)
-
-When `complete()` released tasks from the `dependency:<id>` set, it called `_enqueue(wid)` with no priority argument, defaulting to 0. A task pushed with `priority=5` that was blocked on a dependency would jump to the front of the queue when released.
-
-Fix: `push()` writes the requested priority to the task hash under a reserved field (`_broccoli_priority`). `complete()` reads it back before calling `_enqueue`.
-
----
 
 ## Known limitations
 

@@ -12,11 +12,6 @@ logger = logging.getLogger(__name__)
 class WorkerPool:
     """
     Manages a fixed-size pool of workers, each running in its own daemon thread.
-
-    Bug fixed from original:
-    - ``_create_workers`` referenced ``self.workers`` before it was defined (AttributeError),
-      then was called a *second* time inside ``start()``, which would double the pool.
-      Workers are now created once in ``__init__`` and started (not re-created) in ``start()``.
     """
 
     def __init__(
