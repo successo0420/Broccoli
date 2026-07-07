@@ -1,28 +1,23 @@
 # broccoli/workers/chain_worker.py
 import json
 import logging
+from typing import Any
 
 from broccoli.core.chain.chain import Chain
-from broccoli.core.chain.chain_mixin import ChainWorkerMixin
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.result import ResultBackend
+from broccoli.core.task.task import Task
 from broccoli.workers.base_worker import BaseWorker
 
 logger = logging.getLogger(__name__)
 
 
-class ChainWorker(ChainWorkerMixin, BaseWorker):
+class ChainWorker(BaseWorker):
     """
-    Worker that processes chained tasks.
+    Worker specialised for chain tasks.
 
-    Each step in a chain carries ``__chain_id`` in its payload so that
-    ``post_process`` in BaseWorker skips individual result storage —
-    the chain result is written atomically by ``on_chain_finished``.
-
-    With the new TaskQueue design, dependency release between chain steps
-    happens automatically inside ``queue.complete()`` when a step finishes,
-    provided each step's ``depends_on`` is set to the previous step's task_id
-    at push time.  ``ChainWorkerMixin`` is responsible for setting that up.
+    It registers a handler for the completion task (default: "on_chain_finished")
+    and updates chain progress when each step finishes.
     """
 
     def __init__(self, redis_url: str = "redis://localhost:6379"):
@@ -32,63 +27,96 @@ class ChainWorker(ChainWorkerMixin, BaseWorker):
             task_prefix="chain",
         )
 
-        # The final step of every chain pushes an "on_chain_finished" task
-        # whose handler ties everything together.
+        # Register the default completion handler
         self.registry.register_manually(
             "on_chain_finished",
-            self.on_chain_finished,
+            self._on_chain_finished,
         )
 
         self.result_backend = ResultBackend(redis_url)
         self._redis = RedisController(redis_url).get_client()
 
+        # Hook to update chain progress after every step
+        self.add_completion_handler(self._update_chain_progress)
+
     # ------------------------------------------------------------------
-    # Chain completion
+    # Chain progress tracking
     # ------------------------------------------------------------------
 
-    def on_chain_finished(self, payload: dict):
-        """
-        Registered task handler called when the last step in a chain completes.
+    def _update_chain_progress(self, task: Task, result: Any) -> None:
+        """Increment completed_tasks and update current_task for chain steps."""
+        chain_id = task.payload.get("__chain_id")
+        if not chain_id:
+            return  # not a chain task
 
-        Reads the chain record, attaches the final result, persists it via the
-        result backend, and runs full cleanup.
-        """
-        chain_id = payload.get("chain_id")
-        final_result = payload.get("result")
-
-        chain = Chain.from_dict(self._redis.hgetall(f"{self.task_prefix}:{chain_id}"))
-        chain.result = final_result
-        self.result_backend.store_chain(chain)
-        self.cleanup(chain_id)
-
-    def cleanup(self, chain_id: str) -> None:
-        """
-        Remove all per-step task hashes and chain metadata from Redis.
-
-        Queue sorted-set entries have already been removed by the TaskQueue
-        methods (``complete`` / ``fail``) as each step finished — this method
-        only deletes leftover hash keys.
-        """
-        tasks_raw = self._redis.get(f"{self.task_prefix}:{chain_id}:tasks")
-        if not tasks_raw:
-            logger.warning(f"No task list found for chain {chain_id} during cleanup")
+        # Skip for completion task (it has no __chain_position)
+        position = task.payload.get("__chain_position")
+        if position is None:
             return
 
-        tasks = json.loads(tasks_raw)
-        for task in tasks:
-            task_id = task.get("task_id")
-            if task_id:
-                self._redis.delete(f"{self.task_prefix}:{task_id}")
-                logger.debug(f"Deleted task hash for {task_id}")
+        pipe = self._redis.pipeline()
+        pipe.hincrby(f"chain:{chain_id}", "completed_tasks", 1)
+        pipe.hset(f"chain:{chain_id}", "current_task", position + 1)
+        pipe.execute()
+        logger.debug(f"Chain {chain_id} progress: step {position + 1} done")
 
-        self._redis.delete(f"{self.task_prefix}:{chain_id}")
-        self._redis.delete(f"{self.task_prefix}:{chain_id}:tasks")
-        # self._redis.delete(f"{self.queue.base}:sequence")
+    # ------------------------------------------------------------------
+    # Chain completion handler
+    # ------------------------------------------------------------------
+
+    def _on_chain_finished(self, payload: dict) -> None:
+        """
+        Default handler called when the last chain step finishes.
+
+        It retrieves the final result from the result backend, stores the
+        chain result, and cleans up Redis keys.
+        """
+        chain_id = payload.get("chain_id")
+        last_task_id = payload.get("last_task_id")
+
+        if not chain_id or not last_task_id:
+            logger.error("Missing chain_id or last_task_id in completion payload")
+            return
+
+        # Fetch the last task's result from the result backend
+        last_result = self.result_backend.get(last_task_id)
+        if last_result is None:
+            logger.warning(f"No result found for last task {last_task_id}")
+            final_result = None
+        else:
+            final_result = last_result.result
+
+        # Load and update chain record
+        chain_data = self._redis.hgetall(f"chain:{chain_id}")
+        if not chain_data:
+            logger.error(f"Chain {chain_id} metadata not found")
+            return
+
+        chain = Chain.from_dict(chain_data)
+        chain.result = final_result
+        chain.status = "completed"
+
+        # Store the chain result
+        self.result_backend.store_chain(chain)
+
+        # Clean up per‑step hashes and metadata
+        self._cleanup_chain(chain_id)
+
+        logger.info(f"Chain {chain_id} completed and cleaned up")
+
+    def _cleanup_chain(self, chain_id: str) -> None:
+        """
+        Delete all per‑step task hashes and chain metadata from Redis.
+        """
+        tasks_raw = self._redis.get(f"chain:{chain_id}:tasks")
+        if tasks_raw:
+            tasks = json.loads(tasks_raw)
+            for task in tasks:
+                task_id = task.get("task_id")
+                if task_id:
+                    self._redis.delete(f"chain:{task_id}")
+                    logger.debug(f"Deleted task hash for {task_id}")
+
+        self._redis.delete(f"chain:{chain_id}")
+        self._redis.delete(f"chain:{chain_id}:tasks")
         logger.info(f"Chain {chain_id} cleaned up")
-
-    def on_finish(self, chain_id: str, final_result) -> None:
-        """
-        Hook called when the entire chain is finished.
-        Override in subclasses for custom post-chain logic.
-        """
-        self.on_chain_finished({"chain_id": chain_id, "result": final_result})

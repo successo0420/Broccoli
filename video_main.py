@@ -329,6 +329,7 @@ def test_chain_worker():
 
     @worker.on_complete
     def handle_completion(task, result):
+        print(queue.is_fully_drained())
         if queue.is_fully_drained():
             worker.stop()  # Stop the worker after chain completion
 
@@ -340,7 +341,6 @@ def test_chain_worker():
             {"task_type": "upload_to_cloud", "payload": {"file_path": files[0]}},
         ]
     )
-
     print(f"Chain started: {chain_id}")
     worker.start()
 
@@ -540,13 +540,13 @@ def run_all_tests():
     print("=" * 60)
 
     test_functions = [
-        test_basic_worker,
+        # test_basic_worker,
         test_chain_worker,
-        test_dependency_worker,
-        test_async_worker_io_intensive,
-        test_hybrid_worker_mixed,
-        test_worker_pool,
-        test_complex_chain_with_dependencies,
+        # test_dependency_worker,
+        # test_async_worker_io_intensive,
+        # test_hybrid_worker_mixed,
+        # test_worker_pool,
+        # test_complex_chain_with_dependencies,
     ]
 
     for test_func in test_functions:

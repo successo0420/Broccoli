@@ -2,10 +2,11 @@
 import json
 import logging
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from xmlrpc.client import Boolean
 
 from broccoli.core.chain.chain import Chain
+from broccoli.core.chain.chain_queue import ChainQueue
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.task.task import Task
 from broccoli.core.task.task_queue import TaskQueue
@@ -19,7 +20,7 @@ class TaskChain:
 
     def __init__(self, redis_url: str = "redis://localhost:6379", chain_id: str = None):
         self.queue = TaskQueue(
-            queue_name="chain_tasks:queue", redis_url=redis_url, task_prefix="chain"
+            redis_url=redis_url, queue_name="chain_tasks:queue", task_prefix="chain"
         )
         self._redis = RedisController(redis_url).get_client()
         self.registry = TaskRegistry()
@@ -30,6 +31,7 @@ class TaskChain:
         tasks: List[Dict[str, Any]],
         shared_payload: Dict[str, Any] = None,
         completion_task: str = None,
+        completion_payload: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Chain tasks together.
@@ -38,6 +40,7 @@ class TaskChain:
             tasks: List of task configurations, each with 'task_type' and 'payload'
             shared_payload: Data passed to all tasks in the chain
             completion_task: Optional task to run after the chain completes
+            completion_payload: Data passed to the completion task
 
         Returns:
             chain_id: ID for tracking the entire chain
@@ -85,105 +88,47 @@ class TaskChain:
         )
 
         # Create and push first task using the now-stable task_id
-        first_task = tasks[0]
-        task = Task(
-            task_type=first_task["task_type"],
-            task_id=first_task["task_id"],
-            payload={
-                **first_task.get("payload", {}),
-                **(shared_payload or {}),
-                "__chain_id": self.chain_id,
-                "__chain_position": 0,
-                "__total_tasks": len(tasks),
-                "__is_first": True,
-            },
-            max_retries=first_task.get("max_retries", 3),
-        )
+        prev_task_id = None
+        for i, task_config in enumerate(tasks):
+            task = Task(
+                task_type=task_config["task_type"],
+                task_id=task_config["task_id"],
+                payload={
+                    **task_config.get("payload", {}),
+                    **(shared_payload or {}),
+                    "__chain_id": self.chain_id,
+                    "__chain_position": i,
+                    "__total_tasks": len(tasks),
+                    "__previous_task_id": prev_task_id,
+                },
+                max_retries=task_config.get("max_retries", 3),
+                depends_on=prev_task_id,
+            )
+            self.queue.push(task)
+            prev_task_id = task.task_id
+            print(
+                f"Pushed task {task.task_id} (position {i}) for chain {self.chain_id}"
+            )
+        if completion_task:
+            last_task_id = tasks[-1]["task_id"]
+            comp_payload = {
+                "chain_id": self.chain_id,
+                "last_task_id": last_task_id,
+                **(completion_payload or {}),
+            }
+            comp_task = Task(
+                task_type=completion_task,
+                payload=comp_payload,
+                depends_on=last_task_id,
+                max_retries=3,
+            )
+            self.queue.push(comp_task)
+            logger.info(
+                f"Pushed completion task {comp_task.task_id} for chain {self.chain_id}"
+            )
 
-        # Push first task
-        self.queue.push(task)
-        logger.info(f"Chain {self.chain_id} started with task {task.task_id}")
-
+        logger.info(f"Chain {self.chain_id} started with {len(tasks)} steps")
         return self.chain_id
-
-    def continue_chain(
-        self,
-        previous_task: Task,
-        previous_result: Any,
-        push_completion_task: bool = True,
-    ) -> Boolean | None:
-        """
-        Continue the chain after a task completes.
-        Called by the worker's post_process hook.
-
-        Args:
-            push_completion_task: If True, enqueue the completion task when the chain
-                finishes. Set to False when the caller (e.g. ChainWorkerMixin.on_finish)
-                handles chain completion directly, to avoid running it twice.
-        """
-        chain_id = previous_task.payload.get("__chain_id")
-        if not chain_id:
-            return None
-
-        position = previous_task.payload.get("__chain_position", 0)
-        total_tasks = previous_task.payload.get("__total_tasks", 0)
-
-        # Update chain progress
-        self._redis.hincrby(f"chain:{chain_id}", "completed_tasks", 1)
-        self._redis.hset(f"chain:{chain_id}", "current_task", position + 1)
-
-        # Check if chain is complete
-        if position + 1 >= total_tasks:
-            self._redis.hset(f"chain:{chain_id}", "status", "completed")
-            logger.info(f"Chain {chain_id} completed successfully")
-
-            if push_completion_task:
-                metadata = self._redis.hgetall(f"chain:{chain_id}")
-                completion_task = metadata.get("completion_task")
-                if completion_task:
-                    task = Task(
-                        task_type=completion_task,
-                        payload={
-                            "chain_id": chain_id,
-                            "result": previous_result,
-                            # Mark as chain task so ChainWorkerMixin.post_process
-                            # deletes chain:{task_id} after it runs
-                            "__chain_id": chain_id,
-                        },
-                    )
-                    self.queue.push(task)
-
-            return True
-
-        # Get next task configuration
-        tasks_json = self._redis.get(f"chain:{chain_id}:tasks")
-        if not tasks_json:
-            logger.error(f"Chain {chain_id} tasks not found")
-            return None
-
-        tasks = json.loads(tasks_json)
-        next_task_config = tasks[position + 1]
-
-        # Create next task using the pre-assigned task_id from the stored config
-        next_task = Task(
-            task_type=next_task_config["task_type"],
-            task_id=next_task_config["task_id"],
-            payload={
-                **next_task_config.get("payload", {}),
-                "__chain_id": chain_id,
-                "__chain_position": position + 1,
-                "__total_tasks": total_tasks,
-                "__previous_result": previous_result,
-                "__is_first": False,
-            },
-            max_retries=next_task_config.get("max_retries", 3),
-        )
-
-        # Push next task
-        self.queue.push(next_task)
-        logger.info(
-            f"Chain {chain_id} continuing with task {next_task.task_id} (position {position + 1})"
-        )
 
     def get_chain_status(self, chain_id: str) -> Dict[str, Any]:
         """Get the status of a chain."""

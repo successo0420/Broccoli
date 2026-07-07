@@ -48,6 +48,7 @@ class BaseWorker(ABC):
     def add_completion_handler(self, handler: Callable[[Task, Any], None]):
         """Add a handler to run when tasks complete successfully."""
         self._completion_handlers.append(handler)
+        print(f"Added completion handler: {handler.__name__}")
         return self
 
     def add_failure_handler(self, handler: Callable[[Task, Exception], None]):
@@ -143,13 +144,13 @@ class BaseWorker(ABC):
         ``_handle_task_result`` before this is called.
         """
         self._run_post_process_handlers(task, success)
-
-        # Chain tasks are cleaned up in bulk by ChainWorkerMixin.
-        if task.payload.get("__chain_id"):
-            logger.info(
-                f"Task {task.task_id} {task.status} (chain task, skipping result store)"
+        if success:
+            self._run_completion_handlers(task, task.result)
+        else:
+            self._run_failure_handlers(
+                task,
+                Exception(task.error) if task.error else Exception("Unknown error"),
             )
-            return
 
         # Do not store or delete a requeued task — it will be retried and still
         # needs its hash in Redis.  The worker that eventually completes or
@@ -176,14 +177,6 @@ class BaseWorker(ABC):
         self.result.store_task(task)
         self._redis.delete(f"{self.task_prefix}:{task.task_id}")
         logger.info(f"Task {task.task_id} {task.status} — result stored")
-
-        if success:
-            self._run_completion_handlers(task, task.result)
-        else:
-            self._run_failure_handlers(
-                task,
-                Exception(task.error) if task.error else Exception("Unknown error"),
-            )
 
     # ============ Core Task Lifecycle ============
 
