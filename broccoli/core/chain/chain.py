@@ -1,12 +1,12 @@
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
 @dataclass
 class Chain:
-    chain_id: str(default_factory=lambda: str(uuid.uuid4()))
+    chain_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     total_tasks: Optional[int] = None
     completion_task: Optional[str] = None
     status: str = "pending"
@@ -16,6 +16,7 @@ class Chain:
     result: any = None
 
     def to_dict(self) -> dict:
+        """Convert the Chain object to a dictionary."""
         return {
             "chain_id": self.chain_id,
             "completion_task": self.completion_task or "",
@@ -31,6 +32,7 @@ class Chain:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Chain":
+        """Create a Chain object from a dictionary."""
         return cls(
             chain_id=data.get("chain_id"),
             completion_task=data.get("completion_task") or None,

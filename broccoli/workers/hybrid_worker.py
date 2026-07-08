@@ -23,11 +23,6 @@ class HybridWorker(BaseWorker):
     Worker that combines asyncio (for concurrency) with a thread pool
     (for CPU-bound / blocking task handlers).
 
-    Result storage and user callbacks are handled entirely inside
-    ``_handle_hybrid_result``, which means ``post_process`` must NOT repeat
-    them.  This class overrides ``post_process`` to run only the registered
-    post-process handlers and nothing else, preventing double-fired callbacks
-    and double-stored results.
     """
 
     def __init__(

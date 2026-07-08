@@ -1,8 +1,4 @@
 # broccoli/workers/threaded_worker.py
-# See async_worker.py: defers evaluation of the `dict[str, Task]` hint below
-# so it doesn't raise on Python 3.9 (lowercase generics are 3.9+ for
-# subscripting builtins, but the annotation deferral keeps this consistent
-# across the whole worker family regardless of exact minimum version).
 from __future__ import annotations
 
 import logging
@@ -23,8 +19,6 @@ class ThreadedWorker(BaseWorker):
     """
     Worker that processes multiple tasks concurrently using a thread pool.
 
-    ``_handle_task_result`` is inherited from ``BaseWorker`` — retry logic,
-    dependency release, and queue-set transitions all live in one place.
     """
 
     def __init__(

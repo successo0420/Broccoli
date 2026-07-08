@@ -3,10 +3,8 @@ import json
 import logging
 import uuid
 from typing import Any, Dict, List, Optional
-from xmlrpc.client import Boolean
 
 from broccoli.core.chain.chain import Chain
-from broccoli.core.chain.chain_queue import ChainQueue
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.task.task import Task
 from broccoli.core.task.task_queue import TaskQueue

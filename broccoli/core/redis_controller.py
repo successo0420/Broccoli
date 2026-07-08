@@ -2,6 +2,10 @@ import redis
 
 
 class RedisController:
+    """
+    A controller for managing Redis connections and operations. Use the `get_client` method to obtain a Redis client instance.
+    """
+
     def __init__(self, redis_url: str = "redis://localhost:6379"):
         self._redis = redis.from_url(redis_url, decode_responses=True)
 

@@ -23,7 +23,7 @@ class AsyncWorker(BaseWorker):
     executor so they don't stall the event loop.
 
     State transitions (complete / fail / requeue) are fully delegated to
-    ``BaseWorker._handle_task_result`` — no duplicate logic here.
+    ``BaseWorker._handle_task_result``
     """
 
     def __init__(

@@ -18,6 +18,12 @@ logger = logging.getLogger(__name__)
 
 
 class BaseWorker(ABC):
+    """
+    Blueprint class for workers.  Subclasses implement different concurrency models (threaded, async, hybrid).
+    This class handles the core task lifecycle, state transitions, and handler registration.
+    Add custom logic by overriding pre_process() and post_process() or registering handlers via the decorator methods.
+    """
+
     def __init__(
         self,
         redis_url: str = "redis://localhost:6379",

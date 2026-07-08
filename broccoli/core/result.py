@@ -9,6 +9,10 @@ from broccoli.core.task.task import Task
 
 
 class ResultBackend:
+    """
+    A backend for storing and retrieving task and chain results in Redis.
+    """
+
     def __init__(self, redis_url: str = "redis://localhost:6379/0"):
         self._redis = redis.from_url(redis_url)
         self.ttl = 3600  # Default TTL for results in seconds
