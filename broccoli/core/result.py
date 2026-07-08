@@ -20,15 +20,7 @@ class ResultBackend:
     def store_task(self, task: Task) -> None:
         """Store task result with TTL."""
         key = f"result:{task.task_id}"
-        result_mapping = ResultMapping(
-            id=task.task_id,
-            result=task.result,
-            status=task.status,
-            chain=False,
-            error=task.error or "",
-        )
-
-        json_string = json.dumps(result_mapping.to_dict())
+        json_string = json.dumps(task.to_dict())
         self._redis.set(name=key, ex=self.ttl, value=json_string)
 
     def store_chain(self, chain: Chain) -> None:
@@ -39,9 +31,17 @@ class ResultBackend:
         json_string = json.dumps(chain.to_dict())
         self._redis.set(name=key, ex=self.ttl, value=json_string)
 
-    def get(self, id: str) -> any:
+    def get_task_result(self, id: str) -> any:
         """Retrieve task result."""
         key = f"result:{id}"
+        data = self._redis.get(key)
+        if data:
+            return ResultMapping.from_dict(json.loads(data))
+        return None
+
+    def get_dead_letter_task_result(self, id: str) -> any:
+        """Retrieve dead letter task result."""
+        key = f"dl:{id}"
         data = self._redis.get(key)
         if data:
             return ResultMapping.from_dict(json.loads(data))

@@ -24,8 +24,9 @@ from typing import Callable
 from broccoli.core.chain.task_chain import TaskChain
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.task.task import Task
-from broccoli.core.task.task_queue import TaskQueue
 from broccoli.core.task.task_registry import TaskRegistry
+
+from broccoli.core.task.task_queue import TaskQueue
 from broccoli.workers.chain_worker import ChainWorker
 from broccoli.workers.threaded_worker import ThreadedWorker
 
@@ -87,7 +88,9 @@ def assert_true(condition: bool, message: str):
         raise AssertionError(message)
 
 
-def wait_for(condition: Callable[[], bool], timeout: float = 12.0, interval: float = 0.1):
+def wait_for(
+    condition: Callable[[], bool], timeout: float = 12.0, interval: float = 0.1
+):
     deadline = time.time() + timeout
     while time.time() < deadline:
         if condition():
@@ -104,7 +107,9 @@ def run_worker_until_drained(worker, queue, timeout: float = 12.0):
     worker.stop()
     t.join(timeout=2.0)
 
-    assert_true(drained, f"Queue {queue.get_queue_name()} did not drain within {timeout}s")
+    assert_true(
+        drained, f"Queue {queue.get_queue_name()} did not drain within {timeout}s"
+    )
 
 
 # -------------------------
@@ -123,7 +128,9 @@ def scenario_priority_scheduling():
     worker = ThreadedWorker(redis_url=REDIS_URL, max_workers=1)
     run_worker_until_drained(worker, queue)
 
-    assert_true(execution_log == ["p0", "p2", "p5"], f"Unexpected order: {execution_log}")
+    assert_true(
+        execution_log == ["p0", "p2", "p5"], f"Unexpected order: {execution_log}"
+    )
     print("PASS: Priority scheduling order is correct")
 
 
@@ -144,7 +151,10 @@ def scenario_dependency_scheduling():
     worker = ThreadedWorker(redis_url=REDIS_URL, max_workers=1)
     run_worker_until_drained(worker, queue)
 
-    assert_true(execution_log == ["parent", "child"], f"Dependency order incorrect: {execution_log}")
+    assert_true(
+        execution_log == ["parent", "child"],
+        f"Dependency order incorrect: {execution_log}",
+    )
     print("PASS: Dependency scheduling works")
 
 
@@ -176,8 +186,13 @@ def scenario_dead_letter_requeue():
     worker2 = ThreadedWorker(redis_url=REDIS_URL, max_workers=1)
     run_worker_until_drained(worker2, queue)
 
-    dead_score_after = redis_client.zscore(f"{queue.task_prefix}:dead_letter", task.task_id)
-    assert_true(dead_score_after is None, "Task should no longer be in dead-letter after successful replay")
+    dead_score_after = redis_client.zscore(
+        f"{queue.task_prefix}:dead_letter", task.task_id
+    )
+    assert_true(
+        dead_score_after is None,
+        "Task should no longer be in dead-letter after successful replay",
+    )
     print("PASS: Dead-letter and requeue flow works")
 
 
@@ -209,8 +224,13 @@ def scenario_chain_execution():
     else:
         raw_status = None
 
-    assert_true(raw_status == "completed", f"Expected completed chain status, got: {status}")
-    assert_true(execution_log == ["chain_step_one", "chain_step_two"], f"Unexpected chain execution order: {execution_log}")
+    assert_true(
+        raw_status == "completed", f"Expected completed chain status, got: {status}"
+    )
+    assert_true(
+        execution_log == ["chain_step_one", "chain_step_two"],
+        f"Unexpected chain execution order: {execution_log}",
+    )
     print("PASS: Chain scheduling and execution works")
 
 

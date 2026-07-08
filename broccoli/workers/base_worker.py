@@ -279,6 +279,7 @@ class BaseWorker(ABC):
                 if not task.error:
                     task.error = "Max retries exceeded"
                 self._update_task(task)
+                self.result.store_task(task)
                 self.queue.fail(task)
             else:
                 task.status = "pending"

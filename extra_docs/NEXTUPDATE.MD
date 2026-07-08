@@ -143,4 +143,4 @@ We believe these improvements will make Broccoli even more robust and production
 **Happy queuing!**
 
 
-Talk about making all the handlers in one file and then importing the file to the different files you want to use different workers with so they all see the same handlers.
+Talk about making all the handlers in one file and then importing the file to the different files you want to use different workers with so they all see the same handlers. and redo the readme

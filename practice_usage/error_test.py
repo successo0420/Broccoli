@@ -7,6 +7,7 @@ from broccoli.core.task.task import Task
 from broccoli.core.task.task_queue import TaskQueue
 from broccoli.core.task.task_registry import TaskRegistry
 from broccoli.workers.base_worker import BaseWorker
+from broccoli.workers.threaded_worker import ThreadedWorker
 
 logger = logging.getLogger(__name__)
 registry = TaskRegistry()
@@ -39,4 +40,4 @@ for i in range(1000):
     queue.push(task)
     print(f"Pushed task {task.task_id}")
 
-BaseWorker().start()
+ThreadedWorker().start()
