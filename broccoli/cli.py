@@ -71,6 +71,10 @@ DEFAULT_TASK_PREFIX = os.getenv("BROCCOLI_TASK_PREFIX", "task")
 
 def setup_logging(verbose: int):
     """Configure logging based on verbosity count."""
+    # Keep verbosity mapping intentionally simple:
+    #   0 flags => warnings/errors only
+    #   -v      => informational lifecycle logs
+    #   -vv+    => full debug logs for troubleshooting
     if verbose >= 2:
         level = logging.DEBUG
     elif verbose == 1:
@@ -82,13 +86,17 @@ def setup_logging(verbose: int):
 
 def print_table(headers: List[str], rows: List[List[Any]]):
     """Pretty-print a table with aligned columns."""
+    # Avoid printing empty headers with no rows; this keeps CLI output clean
+    # for scripts that depend on "no data" signaling.
     if not rows:
         print("No data.")
         return
+    # Compute max width per column from headers and row values.
     col_widths = [len(h) for h in headers]
     for row in rows:
         for i, cell in enumerate(row):
             col_widths[i] = max(col_widths[i], len(str(cell)))
+    # Build a deterministic format string so each row aligns exactly.
     fmt = "  ".join(f"{{:<{w}}}" for w in col_widths)
     print(fmt.format(*headers))
     print("-" * (sum(col_widths) + 2 * (len(headers) - 1)))
@@ -103,6 +111,7 @@ def output_json(data: Any):
 
 def output_result(data: Any, fmt: str):
     """Print data in either JSON or table format."""
+    # Keep one output gateway so all subcommands get consistent rendering.
     if fmt == "json":
         output_json(data)
     else:
@@ -166,11 +175,14 @@ def cmd_worker_start(args):
         queue_name = args.queue_name
 
     # Common worker kwargs
+    # Keep these shared for all worker classes so CLI behavior stays uniform
+    # when options like --recover-on-startup are toggled.
     worker_kwargs = {
-        "redis_url": args.redis_url,
         "worker_id": args.worker_id,
         "queue_name": queue_name,
         "task_prefix": args.task_prefix,
+        "recover_on_startup": args.recover_on_startup,
+        "recover_stalled_timeout": args.recover_stalled_timeout,
     }
 
     # Add type-specific kwargs
@@ -184,6 +196,8 @@ def cmd_worker_start(args):
     # ChainWorker inherits BaseWorker and uses default args; no extra needed
 
     # Optionally recover stalled tasks before starting
+    # This is an explicit, one-shot recovery operation requested by the user
+    # and separate from each worker's own startup recovery hook.
     if args.recover_stalled > 0:
         # We need a queue instance to call recover_stalled
         temp_queue = TaskQueue(
@@ -215,9 +229,7 @@ def cmd_worker_start(args):
 def cmd_queue_stats(args):
     """Show queue statistics."""
     q = get_queue(args)
-    stats = q.stats()
-    # Also get waiting tasks count? Not directly available; we can count all dependency keys?
-    # We'll just show what we have.
+    stats = q.processing_stats()
     output_result(stats, args.format)
 
 
@@ -246,6 +258,8 @@ def cmd_queue_list(args):
         sys.exit(1)
 
     redis_client = RedisController(args.redis_url).get_client()
+    # keys() is acceptable here because this command is diagnostics-focused
+    # and typically used against modest key counts by operators.
     task_keys = redis_client.keys(f"{args.task_prefix}:*")
     tasks = []
     for key in task_keys:
@@ -264,6 +278,8 @@ def cmd_queue_list(args):
                     v = v.decode()
                 decoded[k] = v
             task_data = decoded
+        # Status filtering happens after decode so byte/str mismatches never
+        # cause false-negative filtering.
         status = task_data.get("status")
         if args.status != "all" and status != args.status:
             continue
@@ -276,6 +292,7 @@ def cmd_queue_list(args):
             }
         )
     # Sort by created_at
+    # String sort works because created_at is stored in ISO 8601 format.
     tasks.sort(key=lambda x: x.get("created_at", ""))
     if args.limit and len(tasks) > args.limit:
         tasks = tasks[: args.limit]
@@ -304,6 +321,7 @@ def cmd_queue_waiting(args):
     # Optionally fetch each task's details
     tasks = []
     for wid in waiting_ids:
+        # Fetch full hashes to provide richer output than just IDs.
         task = q.get_task(wid)
         if task:
             tasks.append(
@@ -332,11 +350,26 @@ def cmd_dead_list(args):
     tasks = []
     for member, score in members:
         task_id = member.decode() if isinstance(member, bytes) else member
-        # Try to fetch the original task data (may have been cleaned up, but we can store copy in dead letter)
-        # We'll just show the ID and timestamp.
+        # Dead-letter copy intentionally lives under dl:<task_id> so operators
+        # can inspect failure details even after the primary hash is removed.
+        dead_data = redis_client.hgetall(f"dl:{task_id}")
+        error = ""
+        task_type = ""
+        if dead_data:
+            decoded = {}
+            for k, v in dead_data.items():
+                if isinstance(k, bytes):
+                    k = k.decode()
+                if isinstance(v, bytes):
+                    v = v.decode()
+                decoded[k] = v
+            error = decoded.get("error", "")
+            task_type = decoded.get("task_type", "")
         tasks.append(
             {
                 "task_id": task_id,
+                "task_type": task_type,
+                "error": error,
                 "failed_at": score,  # timestamp
             }
         )
@@ -345,32 +378,10 @@ def cmd_dead_list(args):
 
 def cmd_dead_requeue(args):
     """Requeue a dead-letter task (retry it)."""
-    redis_client = RedisController(args.redis_url).get_client()
-    dead_key = f"{args.task_prefix}:dead_letter"
-    # Check if task is in dead set
-    is_dead = redis_client.zscore(dead_key, args.task_id) is not None
-    if not is_dead:
-        print(f"Task {args.task_id} not found in dead-letter set", file=sys.stderr)
-        sys.exit(1)
-    # We need to re-push it to the queue. But we need the task data. It may have been deleted.
-    # We can retrieve from result backend? Or we can store a copy.
-    # For simplicity, we'll assume the task hash still exists (if not, we can't).
     q = get_queue(args)
-    task = q.get_task(args.task_id)
-    if not task:
-        print(
-            f"Task {args.task_id} metadata not found; cannot requeue. (Maybe it was already cleaned up.)",
-            file=sys.stderr,
-        )
+    if not q.requeue_dead(args.task_id):
+        print(f"Task {args.task_id} could not be requeued from dead-letter", file=sys.stderr)
         sys.exit(1)
-    # Reset retries to 0 and push again
-    task.retries = 0
-    task.status = "pending"
-    task.error = None
-    # Remove from dead-letter set
-    redis_client.zrem(dead_key, args.task_id)
-    # Push back to queue
-    q.push(task)
     print(f"Requeued task {args.task_id}")
 
 
@@ -402,6 +413,7 @@ def cmd_health(args):
     """Check if Redis is reachable and basic queue operations work."""
     try:
         redis_client = RedisController(args.redis_url).get_client()
+        # ping() verifies connectivity + authentication permissions quickly.
         redis_client.ping()
         # Also try to get queue stats
         q = get_queue(args)
@@ -434,6 +446,8 @@ def create_parser():
     )
 
     # ---------- worker start ----------
+    # Subcommand tree keeps "worker start" extensible for future worker ops
+    # (pause/resume, draining, etc.) without breaking CLI compatibility.
     worker_parser = subparsers.add_parser("worker", help="Manage workers")
     worker_subparsers = worker_parser.add_subparsers(
         dest="worker_action", required=True
@@ -501,9 +515,22 @@ def create_parser():
         default=0,
         help="Recover stalled tasks older than N seconds before starting (0 = off)",
     )
+    start_parser.add_argument(
+        "--recover-stalled-timeout",
+        type=int,
+        default=3600,
+        help="Timeout used by worker startup auto-recovery (default: 3600)",
+    )
+    start_parser.add_argument(
+        "--recover-on-startup",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Automatically recover stalled tasks once when each worker starts (default: on)",
+    )
     start_parser.set_defaults(func=cmd_worker_start)
 
     # ---------- queue ----------
+    # Queue inspection and debugging commands.
     queue_parser = subparsers.add_parser("queue", help="Inspect the task queue")
     queue_subparsers = queue_parser.add_subparsers(dest="queue_action", required=True)
 
@@ -555,6 +582,7 @@ def create_parser():
     waiting_parser.set_defaults(func=cmd_queue_waiting)
 
     # ---------- dead ----------
+    # Dead-letter operational commands (inspection + manual replay).
     dead_parser = subparsers.add_parser("dead", help="Manage dead-letter tasks")
     dead_subparsers = dead_parser.add_subparsers(dest="dead_action", required=True)
 
@@ -576,6 +604,7 @@ def create_parser():
     dead_requeue_parser.set_defaults(func=cmd_dead_requeue)
 
     # ---------- chain ----------
+    # Chain-focused read-only inspection commands.
     chain_parser = subparsers.add_parser("chain", help="Inspect task chains")
     chain_subparsers = chain_parser.add_subparsers(dest="chain_action", required=True)
 
@@ -600,6 +629,7 @@ def create_parser():
     chain_tasks_parser.set_defaults(func=cmd_chain_tasks)
 
     # ---------- health ----------
+    # Lightweight readiness check for automation (scripts/containers/probes).
     health_parser = subparsers.add_parser(
         "health", help="Check system health (Redis connectivity)"
     )

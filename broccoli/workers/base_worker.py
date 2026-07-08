@@ -30,6 +30,8 @@ class BaseWorker(ABC):
         worker_id: str = None,
         queue_name: str = "tasks:queue",
         task_prefix: str = "task",
+        recover_on_startup: bool = True,
+        recover_stalled_timeout: int = 3600,
     ):
         self.redis_url = redis_url
         self._redis = RedisController(redis_url).get_client()
@@ -42,6 +44,9 @@ class BaseWorker(ABC):
         self.worker_id = worker_id or f"worker-{id(self)}"
         self.task_timeout = 3600
         self.result = ResultBackend(redis_url)
+        self.recover_on_startup = recover_on_startup
+        self.recover_stalled_timeout = recover_stalled_timeout
+        self._startup_recovered = False
 
         # Handler lists
         self._completion_handlers: List[Callable[[Task, Any], None]] = []
@@ -188,8 +193,15 @@ class BaseWorker(ABC):
         # (e.g. a Redis error) and the hash still ends up deleted.
         if task.status == "failed":
             try:
+                failed_at = time.time()
                 self._redis.zadd(
-                    f"{self.task_prefix}:dead_letter", {task.task_id: time.time()}
+                    f"{self.task_prefix}:dead_letter", {task.task_id: failed_at}
+                )
+                dead_copy = task.to_dict()
+                dead_copy["failed_at"] = str(failed_at)
+                self._redis.hset(
+                    f"dl:{task.task_id}",
+                    mapping=dead_copy,
                 )
             except Exception as e:
                 logger.error(
@@ -278,6 +290,18 @@ class BaseWorker(ABC):
                     f"(attempt {task.retries}/{task.max_retries})"
                 )
 
+    def _recover_stalled_on_startup(self) -> None:
+        """Recover orphaned processing tasks once before entering the worker loop."""
+        if self._startup_recovered or not self.recover_on_startup:
+            return
+        recovered = self.queue.recover_stalled(self.recover_stalled_timeout)
+        self._startup_recovered = True
+        if recovered:
+            logger.info(
+                f"Worker {self.worker_id} recovered {recovered} stalled task(s) "
+                f"on startup (timeout={self.recover_stalled_timeout}s)"
+            )
+
     def _update_task(self, task: Task) -> None:
         """Persist current task state to Redis (skipped for chain tasks)."""
         if task.payload.get("__chain_id"):
@@ -302,6 +326,7 @@ class BaseWorker(ABC):
         """
         self._register_signal_handlers()
         self.running = True
+        self._recover_stalled_on_startup()
         logger.info(f"Worker {self.worker_id} started")
 
         backoff = 1
