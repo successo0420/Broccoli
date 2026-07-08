@@ -219,7 +219,7 @@ def cmd_worker_start(args):
         )
         pool.start()
     else:
-        worker = worker_class(**worker_kwargs)
+        worker = worker_class(redis_url=args.redis_url, **worker_kwargs)
         worker.start()
 
 
