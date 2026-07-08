@@ -167,10 +167,11 @@ def cmd_worker_start(args):
 
     # Common worker kwargs
     worker_kwargs = {
-        "redis_url": args.redis_url,
         "worker_id": args.worker_id,
         "queue_name": queue_name,
         "task_prefix": args.task_prefix,
+        "recover_on_startup": args.recover_on_startup,
+        "recover_stalled_timeout": args.recover_stalled_timeout,
     }
 
     # Add type-specific kwargs
@@ -215,9 +216,7 @@ def cmd_worker_start(args):
 def cmd_queue_stats(args):
     """Show queue statistics."""
     q = get_queue(args)
-    stats = q.stats()
-    # Also get waiting tasks count? Not directly available; we can count all dependency keys?
-    # We'll just show what we have.
+    stats = q.processing_stats()
     output_result(stats, args.format)
 
 
@@ -332,11 +331,24 @@ def cmd_dead_list(args):
     tasks = []
     for member, score in members:
         task_id = member.decode() if isinstance(member, bytes) else member
-        # Try to fetch the original task data (may have been cleaned up, but we can store copy in dead letter)
-        # We'll just show the ID and timestamp.
+        dead_data = redis_client.hgetall(f"dl:{task_id}")
+        error = ""
+        task_type = ""
+        if dead_data:
+            decoded = {}
+            for k, v in dead_data.items():
+                if isinstance(k, bytes):
+                    k = k.decode()
+                if isinstance(v, bytes):
+                    v = v.decode()
+                decoded[k] = v
+            error = decoded.get("error", "")
+            task_type = decoded.get("task_type", "")
         tasks.append(
             {
                 "task_id": task_id,
+                "task_type": task_type,
+                "error": error,
                 "failed_at": score,  # timestamp
             }
         )
@@ -345,32 +357,10 @@ def cmd_dead_list(args):
 
 def cmd_dead_requeue(args):
     """Requeue a dead-letter task (retry it)."""
-    redis_client = RedisController(args.redis_url).get_client()
-    dead_key = f"{args.task_prefix}:dead_letter"
-    # Check if task is in dead set
-    is_dead = redis_client.zscore(dead_key, args.task_id) is not None
-    if not is_dead:
-        print(f"Task {args.task_id} not found in dead-letter set", file=sys.stderr)
-        sys.exit(1)
-    # We need to re-push it to the queue. But we need the task data. It may have been deleted.
-    # We can retrieve from result backend? Or we can store a copy.
-    # For simplicity, we'll assume the task hash still exists (if not, we can't).
     q = get_queue(args)
-    task = q.get_task(args.task_id)
-    if not task:
-        print(
-            f"Task {args.task_id} metadata not found; cannot requeue. (Maybe it was already cleaned up.)",
-            file=sys.stderr,
-        )
+    if not q.requeue_dead(args.task_id):
+        print(f"Task {args.task_id} could not be requeued from dead-letter", file=sys.stderr)
         sys.exit(1)
-    # Reset retries to 0 and push again
-    task.retries = 0
-    task.status = "pending"
-    task.error = None
-    # Remove from dead-letter set
-    redis_client.zrem(dead_key, args.task_id)
-    # Push back to queue
-    q.push(task)
     print(f"Requeued task {args.task_id}")
 
 
@@ -500,6 +490,18 @@ def create_parser():
         type=int,
         default=0,
         help="Recover stalled tasks older than N seconds before starting (0 = off)",
+    )
+    start_parser.add_argument(
+        "--recover-stalled-timeout",
+        type=int,
+        default=3600,
+        help="Timeout used by worker startup auto-recovery (default: 3600)",
+    )
+    start_parser.add_argument(
+        "--recover-on-startup",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Automatically recover stalled tasks once when each worker starts (default: on)",
     )
     start_parser.set_defaults(func=cmd_worker_start)
 

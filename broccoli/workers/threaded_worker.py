@@ -25,9 +25,20 @@ class ThreadedWorker(BaseWorker):
         self,
         redis_url: str = "redis://localhost:6379",
         worker_id: str = None,
+        queue_name: str = "tasks:queue",
+        task_prefix: str = "task",
         max_workers: int = 4,
+        recover_on_startup: bool = True,
+        recover_stalled_timeout: int = 3600,
     ):
-        super().__init__(redis_url, worker_id)
+        super().__init__(
+            redis_url=redis_url,
+            worker_id=worker_id,
+            queue_name=queue_name,
+            task_prefix=task_prefix,
+            recover_on_startup=recover_on_startup,
+            recover_stalled_timeout=recover_stalled_timeout,
+        )
         self.max_workers = max_workers
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.active_tasks: dict[str, Task] = {}
@@ -100,6 +111,7 @@ class ThreadedWorker(BaseWorker):
         """Main loop: pop tasks and submit them to the thread pool."""
         self._register_signal_handlers()
         self.running = True
+        self._recover_stalled_on_startup()
         logger.info(
             f"ThreadedWorker {self.worker_id} started (max_workers={self.max_workers})"
         )

@@ -30,9 +30,20 @@ class AsyncWorker(BaseWorker):
         self,
         redis_url: str = "redis://localhost:6379",
         worker_id: str = None,
+        queue_name: str = "tasks:queue",
+        task_prefix: str = "task",
         max_concurrent: int = 10,
+        recover_on_startup: bool = True,
+        recover_stalled_timeout: int = 3600,
     ):
-        super().__init__(redis_url, worker_id)
+        super().__init__(
+            redis_url=redis_url,
+            worker_id=worker_id,
+            queue_name=queue_name,
+            task_prefix=task_prefix,
+            recover_on_startup=recover_on_startup,
+            recover_stalled_timeout=recover_stalled_timeout,
+        )
         self.max_concurrent = max_concurrent
         # Semaphore is created lazily inside the running event loop to avoid
         # "no running event loop" errors at construction time.
@@ -102,6 +113,7 @@ class AsyncWorker(BaseWorker):
     async def start_async(self):
         """Main async loop: pop tasks and dispatch them as asyncio tasks."""
         self._register_signal_handlers()
+        self._recover_stalled_on_startup()
         # Semaphore must be created inside the running loop.
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
         self.running = True

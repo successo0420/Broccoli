@@ -15,6 +15,7 @@ _FIFO_TIER_SIZE = 1_000_000_000_000
 # Redis field used to carry a task's original priority through the waiting state
 # so it can be restored when the dependency is released.
 _PRIORITY_FIELD = "_broccoli_priority"
+_DEAD_LETTER_PREFIX = "dl"
 
 
 class TaskQueue:
@@ -54,6 +55,30 @@ class TaskQueue:
         self.base = base
         self.processing_key = f"{base}:processing"
         self.sequence_key = f"{base}:sequence"
+        self.dead_letter_key = f"{self.task_prefix}:dead_letter"
+
+        # Atomically register a dependency or enqueue immediately if parent is done.
+        self._push_with_dependency_script = self._redis.register_script(
+            """
+            local parent_status = redis.call('HGET', KEYS[1], 'status')
+            local task_id = ARGV[1]
+            local priority = tonumber(ARGV[2]) or 0
+            local tier_size = tonumber(ARGV[3]) or 1000000000000
+            local priority_field = ARGV[4]
+
+            if parent_status == 'completed' then
+                local seq = redis.call('INCR', KEYS[5])
+                local score = (priority * tier_size) + seq
+                redis.call('ZADD', KEYS[2], score, task_id)
+                redis.call('HSET', KEYS[4], 'status', 'pending', priority_field, tostring(priority))
+                return 1
+            end
+
+            redis.call('SADD', KEYS[3], task_id)
+            redis.call('HSET', KEYS[4], 'status', 'waiting', priority_field, tostring(priority))
+            return 0
+            """
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -68,46 +93,25 @@ class TaskQueue:
         ``waiting`` and added to ``dependency:<parent_id>`` so ``complete()``
         can release it later.
 
-        Race condition handled with a register-then-verify pattern:
-          1. Register in the dependency set first.
-          2. Re-check the parent's status.
-          3. If parent is already completed (raced past us), release immediately.
-        This eliminates the TOCTOU window present in a check-then-register approach.
+        Dependency registration is atomic via a Lua script:
+          - If parent is already completed, task is enqueued immediately.
+          - Otherwise task is registered under dependency:<parent_id> and set waiting.
         """
         # Always persist task metadata first so workers can read it after pop().
         self._redis.hset(f"{self.task_prefix}:{task.task_id}", mapping=task.to_dict())
 
         if task.depends_on:
-            # Mark as waiting immediately and register in the dependency set.
-            # We do this BEFORE reading the parent's status to close the
-            # check-then-register race window.
-            task.status = "waiting"
-            pipe = self._redis.pipeline()
-            pipe.hset(f"{self.task_prefix}:{task.task_id}", "status", "waiting")
-            # Store the requested priority so complete() can restore it.
-            pipe.hset(
-                f"{self.task_prefix}:{task.task_id}", _PRIORITY_FIELD, str(priority)
+            result = self._push_with_dependency_script(
+                keys=[
+                    f"{self.task_prefix}:{task.depends_on}",
+                    self.queue_key,
+                    f"dependency:{task.depends_on}",
+                    f"{self.task_prefix}:{task.task_id}",
+                    self.sequence_key,
+                ],
+                args=[task.task_id, str(priority), str(_FIFO_TIER_SIZE), _PRIORITY_FIELD],
             )
-            pipe.sadd(f"dependency:{task.depends_on}", task.task_id)
-            pipe.execute()
-
-            # Now verify: if the parent already completed before our sadd, release now.
-            dep_status = self._redis.hget(
-                f"{self.task_prefix}:{task.depends_on}", "status"
-            )
-            parent_done = (
-                dep_status
-                and (
-                    dep_status.decode() if isinstance(dep_status, bytes) else dep_status
-                )
-                == "completed"
-            )
-
-            if parent_done:
-                # Parent completed before (or concurrently with) our registration.
-                # Release ourselves immediately and clean up.
-                self._redis.srem(f"dependency:{task.depends_on}", task.task_id)
-                self._enqueue(task.task_id, priority)
+            if int(result) == 1:
                 logger.debug(
                     f"Task {task.task_id}: dependency {task.depends_on} already "
                     "completed, enqueued immediately"
@@ -142,7 +146,17 @@ class TaskQueue:
             logger.error(
                 f"Task data missing for {task_id!r}; moving to dead-letter set"
             )
-            self._redis.sadd(f"{self.task_prefix}:dead_letter", task_id)
+            now = time.time()
+            self._redis.zadd(self.dead_letter_key, {task_id: now})
+            self._redis.hset(
+                f"{_DEAD_LETTER_PREFIX}:{task_id}",
+                mapping={
+                    "task_id": task_id,
+                    "status": "failed",
+                    "error": "Task hash missing at pop()",
+                    "failed_at": str(now),
+                },
+            )
             return None
 
         # Score in the processing set is a Unix timestamp so recover_stalled()
@@ -185,6 +199,45 @@ class TaskQueue:
     def fail(self, task: Task) -> None:
         """Remove a permanently failed (or skipped) task from the processing set."""
         self._redis.zrem(self.processing_key, task.task_id)
+
+    def requeue_dead(self, task_id: str) -> bool:
+        """
+        Requeue a dead-letter task by ID.
+
+        Returns ``True`` if the task was restored and queued, ``False`` if the
+        task was not found in dead letter storage.
+        """
+        if self._redis.zscore(self.dead_letter_key, task_id) is None:
+            return False
+
+        dead_data = self._redis.hgetall(f"{_DEAD_LETTER_PREFIX}:{task_id}")
+        task_data = dead_data or self._redis.hgetall(f"{self.task_prefix}:{task_id}")
+        if not task_data:
+            return False
+
+        decoded = {}
+        for key, value in task_data.items():
+            if isinstance(key, bytes):
+                key = key.decode()
+            if isinstance(value, bytes):
+                value = value.decode()
+            decoded[key] = value
+
+        task = Task.from_dict(decoded)
+        task.retries = 0
+        task.status = "pending"
+        task.error = None
+        task.secondary_error = None
+
+        raw_pri = decoded.get(_PRIORITY_FIELD)
+        priority = int(raw_pri) if raw_pri else 0
+
+        pipe = self._redis.pipeline()
+        pipe.zrem(self.dead_letter_key, task_id)
+        pipe.delete(f"{_DEAD_LETTER_PREFIX}:{task_id}")
+        pipe.execute()
+        self.push(task, priority=priority)
+        return True
 
     def requeue(self, task_id: str, priority: Optional[int] = None) -> None:
         """
@@ -281,6 +334,23 @@ class TaskQueue:
             for tid in self._redis.smembers(f"dependency:{task_id}")
         ]
 
+    def get_waiting_tasks(self) -> list:
+        """Return all task IDs currently marked as waiting."""
+        waiting = []
+        for key in self._redis.scan_iter(match=f"{self.task_prefix}:*"):
+            status = self._redis.hget(key, "status")
+            if not status:
+                continue
+            status = status.decode() if isinstance(status, bytes) else status
+            if status != "waiting":
+                continue
+            task_id = self._redis.hget(key, "task_id")
+            if not task_id:
+                continue
+            task_id = task_id.decode() if isinstance(task_id, bytes) else task_id
+            waiting.append(task_id)
+        return waiting
+
     def stats(self) -> dict:
         """
         Snapshot of queue depth for monitoring/diagnostics.
@@ -291,10 +361,18 @@ class TaskQueue:
         pipe = self._redis.pipeline()
         pipe.zcard(self.queue_key)
         pipe.zcard(self.processing_key)
-        pipe.scard(f"{self.task_prefix}:dead_letter")
+        pipe.zcard(self.dead_letter_key)
         runnable, processing, dead_letter = pipe.execute()
+
+        oldest = self._redis.zrange(self.processing_key, 0, 0, withscores=True)
+        oldest_processing_timestamp = oldest[0][1] if oldest else None
         return {
             "runnable": runnable,
             "processing": processing,
             "dead_letter": dead_letter,
+            "oldest_processing_timestamp": oldest_processing_timestamp,
         }
+
+    def processing_stats(self) -> dict:
+        """Alias for queue stats with processing age visibility."""
+        return self.stats()

@@ -20,11 +20,22 @@ class ChainWorker(BaseWorker):
     and updates chain progress when each step finishes.
     """
 
-    def __init__(self, redis_url: str = "redis://localhost:6379"):
+    def __init__(
+        self,
+        redis_url: str = "redis://localhost:6379",
+        worker_id: str = None,
+        queue_name: str = "chain_tasks:queue",
+        task_prefix: str = "chain",
+        recover_on_startup: bool = True,
+        recover_stalled_timeout: int = 3600,
+    ):
         super().__init__(
             redis_url=redis_url,
-            queue_name="chain_tasks:queue",
-            task_prefix="chain",
+            worker_id=worker_id,
+            queue_name=queue_name,
+            task_prefix=task_prefix,
+            recover_on_startup=recover_on_startup,
+            recover_stalled_timeout=recover_stalled_timeout,
         )
 
         self.result_backend = ResultBackend(redis_url)

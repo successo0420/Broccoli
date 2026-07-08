@@ -29,11 +29,22 @@ class HybridWorker(BaseWorker):
         self,
         redis_url: str = "redis://localhost:6379",
         worker_id: str = None,
+        queue_name: str = "tasks:queue",
+        task_prefix: str = "task",
         thread_workers: int = 4,
         async_tasks: int = 10,
         result_ttl: int = 86400,  # 24 hours
+        recover_on_startup: bool = True,
+        recover_stalled_timeout: int = 3600,
     ):
-        super().__init__(redis_url, worker_id)
+        super().__init__(
+            redis_url=redis_url,
+            worker_id=worker_id,
+            queue_name=queue_name,
+            task_prefix=task_prefix,
+            recover_on_startup=recover_on_startup,
+            recover_stalled_timeout=recover_stalled_timeout,
+        )
         self.thread_pool = ThreadPoolExecutor(max_workers=thread_workers)
         self.thread_workers = thread_workers
         self.async_tasks = async_tasks
@@ -141,8 +152,15 @@ class HybridWorker(BaseWorker):
         # raises.
         if task.status == "failed":
             try:
+                failed_at = time.time()
                 self._redis.zadd(
-                    f"{self.task_prefix}:dead_letter", {task.task_id: time.time()}
+                    f"{self.task_prefix}:dead_letter", {task.task_id: failed_at}
+                )
+                dead_copy = task.to_dict()
+                dead_copy["failed_at"] = str(failed_at)
+                self._redis.hset(
+                    f"dl:{task.task_id}",
+                    mapping=dead_copy,
                 )
             except Exception as e:
                 logger.error(
@@ -211,6 +229,7 @@ class HybridWorker(BaseWorker):
         """Create a fresh event loop and run until stopped."""
         self._register_signal_handlers()
         self.running = True
+        self._recover_stalled_on_startup()
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         logger.info(
