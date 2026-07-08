@@ -1,5 +1,6 @@
 # test_comprehensive.py
 import hashlib
+import logging
 import os
 import subprocess
 import time
@@ -12,8 +13,8 @@ from broccoli.core.redis_controller import RedisController
 from broccoli.core.task.task import Task
 from broccoli.core.task.task_queue import TaskQueue
 from broccoli.core.task.task_registry import TaskRegistry
+from broccoli.logging_config import setup_logging
 from broccoli.workers.async_worker import AsyncWorker
-from broccoli.workers.base_worker import BaseWorker
 from broccoli.workers.chain_worker import ChainWorker
 from broccoli.workers.hybrid_worker import HybridWorker
 from broccoli.workers.threaded_worker import ThreadedWorker
@@ -23,6 +24,8 @@ from broccoli.workers.worker_pool import WorkerPool
 registry = TaskRegistry()
 queue = TaskQueue()
 chain = TaskChain()
+setup_logging(logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ============ TASK DEFINITIONS ============
 

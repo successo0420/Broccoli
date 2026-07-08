@@ -31,7 +31,7 @@ class ChainWorker(BaseWorker):
         self._redis = RedisController(redis_url).get_client()
 
         # Hook to update chain progress after every step
-        self.add_completion_handler(self._update_chain_progress)
+        self.add_post_process_handler(self._update_chain_progress)
         self.add_chain_completion_handler(self._on_chain_finished)
 
     # ------------------------------------------------------------------
@@ -95,15 +95,6 @@ class ChainWorker(BaseWorker):
         """
         Delete all per‑step task hashes and chain metadata from Redis.
         """
-        tasks_raw = self._redis.get(f"chain:{chain_id}:tasks")
-        if tasks_raw:
-            tasks = json.loads(tasks_raw)
-            for task in tasks:
-                task_id = task.get("task_id")
-                if task_id:
-                    self._redis.delete(f"chain:{task_id}")
-                    logger.debug(f"Deleted task hash for {task_id}")
-
         self._redis.delete(f"chain:{chain_id}")
         self._redis.delete(f"chain:{chain_id}:tasks")
         logger.info(f"Chain {chain_id} cleaned up")

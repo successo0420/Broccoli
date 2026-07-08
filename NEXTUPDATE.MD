@@ -79,7 +79,7 @@ Currently you can see runnable tasks and in‑flight ones, but there’s no easy
 - `queue.get_waiting_tasks()` – returns all task IDs with status `"waiting"` (requires scanning or a separate index).
 - A simple admin CLI command to dump all waiting tasks and their dependency trees.
 
----
+<!-- ---
 
 ### 7. ChainWorkerMixin audit & documentation
 
@@ -89,7 +89,7 @@ The `ChainWorkerMixin` was written for an older queue implementation (where `pop
 - Review `ChainWorkerMixin` to ensure it uses `Task.depends_on` to link steps, rather than manually managing a separate sequencing mechanism.
 - Update documentation with clear examples of chain creation, step payloads, and the `__previous_result` injection.
 
----
+--- -->
 
 ## 🟢 Performance & Production Readiness
 

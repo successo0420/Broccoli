@@ -192,10 +192,6 @@ class BaseWorker(ABC):
                 )
         if task.payload.get("__chain_id"):
             logger.info(
-                f"Task {task.task_id} is part of chain {task.chain_id}; "
-                f"skipping result storage"
-            )
-            logger.info(
                 f"Task {task.task_id} is part of chain {task.chain_id}; skipping result storage"
             )
             if task.payload.get("__is_last_task"):
@@ -204,16 +200,12 @@ class BaseWorker(ABC):
                 )
                 # If this is the last task in the chain, store its result in the
                 # result backend for the chain.
-                self._run_chain_completion_handlers(task, task.payload)
-                logger.info(
-                    f"Task {task.task_id} is the last task in chain {task.chain_id}; "
-                    f"result stored for chain"
-                )
 
+                self._run_chain_completion_handlers(task, task.payload)
         else:
             self.result.store_task(task)
+            logger.info(f"Task {task.task_id} {task.status} — result stored")
         self._redis.delete(f"{self.task_prefix}:{task.task_id}")
-        logger.info(f"Task {task.task_id} {task.status} — result stored")
         self._run_completion_handlers(task, task.result)
 
     # ============ Core Task Lifecycle ============

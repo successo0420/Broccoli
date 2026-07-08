@@ -54,6 +54,7 @@ from broccoli.core.chain.task_chain import TaskChain
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.task.task import Task
 from broccoli.core.task.task_queue import TaskQueue
+from broccoli.logging_config import setup_logging as configure_logging
 from broccoli.workers.async_worker import AsyncWorker
 from broccoli.workers.base_worker import BaseWorker
 from broccoli.workers.chain_worker import ChainWorker
@@ -70,14 +71,13 @@ DEFAULT_TASK_PREFIX = os.getenv("BROCCOLI_TASK_PREFIX", "task")
 
 def setup_logging(verbose: int):
     """Configure logging based on verbosity count."""
-    level = logging.WARNING
     if verbose >= 2:
         level = logging.DEBUG
     elif verbose == 1:
         level = logging.INFO
-    logging.basicConfig(
-        level=level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
+    else:
+        level = logging.WARNING
+    configure_logging(level)
 
 
 def print_table(headers: List[str], rows: List[List[Any]]):
