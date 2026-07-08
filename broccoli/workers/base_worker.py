@@ -272,6 +272,7 @@ class BaseWorker(ABC):
                 task.status = "pending"
                 self._update_task(task)
                 self.queue.requeue(task.task_id)
+
                 logger.info(
                     f"Task {task.task_id} requeued "
                     f"(attempt {task.retries}/{task.max_retries})"

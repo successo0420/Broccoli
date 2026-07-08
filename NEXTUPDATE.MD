@@ -81,7 +81,7 @@ Currently you can see runnable tasks and in‑flight ones, but there’s no easy
 
 <!-- ---
 
-### 7. ChainWorkerMixin audit & documentation
+### 7. ChainWorkerMixin audit & documentation - this is done.
 
 The `ChainWorkerMixin` was written for an older queue implementation (where `pop()` handled dependencies). Its logic may now be redundant or conflict with the new `depends_on`‑based approach.
 
@@ -141,3 +141,6 @@ If you’re interested in working on any of these items, please open an issue or
 We believe these improvements will make Broccoli even more robust and production‑ready, while keeping its core simplicity intact.
 
 **Happy queuing!**
+
+
+Talk about making all the handlers in one file and then importing the file to the different files you want to use different workers with so they all see the same handlers.
