@@ -90,9 +90,11 @@ class TaskChain:
         # Create and push first task using the now-stable task_id
         prev_task_id = None
         for i, task_config in enumerate(tasks):
+            last_task = i == len(tasks) - 1
             task = Task(
                 task_type=task_config["task_type"],
                 task_id=task_config["task_id"],
+                chain_id=self.chain_id,
                 payload={
                     **task_config.get("payload", {}),
                     **(shared_payload or {}),
@@ -100,13 +102,14 @@ class TaskChain:
                     "__chain_position": i,
                     "__total_tasks": len(tasks),
                     "__previous_task_id": prev_task_id,
+                    "__is_last_task": last_task,
                 },
                 max_retries=task_config.get("max_retries", 3),
                 depends_on=prev_task_id,
             )
             self.queue.push(task)
             prev_task_id = task.task_id
-            print(
+            logger.info(
                 f"Pushed task {task.task_id} (position {i}) for chain {self.chain_id}"
             )
         if completion_task:
@@ -119,6 +122,7 @@ class TaskChain:
             comp_task = Task(
                 task_type=completion_task,
                 payload=comp_payload,
+                chain_id=self.chain_id,
                 depends_on=last_task_id,
                 max_retries=3,
             )
@@ -134,13 +138,8 @@ class TaskChain:
         """Get the status of a chain."""
         data = self._redis.hgetall(f"chain:{chain_id}")
         if not data:
-            return {"status": "not_found"}
+            data = self._redis.get(f"result:{chain_id}")
+            if not data:
+                return {"status": "Not Found"}
 
-        return {
-            "chain_id": chain_id,
-            "total_tasks": int(data.get("total_tasks", 0)),
-            "completed_tasks": int(data.get("completed_tasks", 0)),
-            "current_task": int(data.get("current_task", 0)),
-            "status": data.get("status", "unknown"),
-            "failed": data.get("failed", "False") == "True",
-        }
+        return data

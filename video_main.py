@@ -327,12 +327,6 @@ def test_chain_worker():
     worker = ChainWorker()
     queue = ChainQueue()
 
-    @worker.on_complete
-    def handle_completion(task, result):
-        print(queue.is_fully_drained())
-        if queue.is_fully_drained():
-            worker.stop()  # Stop the worker after chain completion
-
     # Create chain: validate → compress → upload
     chain_id = chain.chain(
         [

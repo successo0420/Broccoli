@@ -27,17 +27,12 @@ class ChainWorker(BaseWorker):
             task_prefix="chain",
         )
 
-        # Register the default completion handler
-        self.registry.register_manually(
-            "on_chain_finished",
-            self._on_chain_finished,
-        )
-
         self.result_backend = ResultBackend(redis_url)
         self._redis = RedisController(redis_url).get_client()
 
         # Hook to update chain progress after every step
         self.add_completion_handler(self._update_chain_progress)
+        self.add_chain_completion_handler(self._on_chain_finished)
 
     # ------------------------------------------------------------------
     # Chain progress tracking
@@ -64,27 +59,19 @@ class ChainWorker(BaseWorker):
     # Chain completion handler
     # ------------------------------------------------------------------
 
-    def _on_chain_finished(self, payload: dict) -> None:
+    def _on_chain_finished(self, task, payload: dict) -> None:
         """
         Default handler called when the last chain step finishes.
 
         It retrieves the final result from the result backend, stores the
         chain result, and cleans up Redis keys.
         """
-        chain_id = payload.get("chain_id")
-        last_task_id = payload.get("last_task_id")
+        chain_id = payload.get("__chain_id")
+        last_task_id = payload.get("__is_last_task")
 
         if not chain_id or not last_task_id:
             logger.error("Missing chain_id or last_task_id in completion payload")
             return
-
-        # Fetch the last task's result from the result backend
-        last_result = self.result_backend.get(last_task_id)
-        if last_result is None:
-            logger.warning(f"No result found for last task {last_task_id}")
-            final_result = None
-        else:
-            final_result = last_result.result
 
         # Load and update chain record
         chain_data = self._redis.hgetall(f"chain:{chain_id}")
@@ -93,7 +80,7 @@ class ChainWorker(BaseWorker):
             return
 
         chain = Chain.from_dict(chain_data)
-        chain.result = final_result
+        chain.result = task.result  # Store the final result from the last task
         chain.status = "completed"
 
         # Store the chain result

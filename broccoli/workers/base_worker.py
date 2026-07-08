@@ -42,13 +42,20 @@ class BaseWorker(ABC):
         self._failure_handlers: List[Callable[[Task, Exception], None]] = []
         self._pre_process_handlers: List[Callable[[Task], bool]] = []
         self._post_process_handlers: List[Callable[[Task, bool], None]] = []
+        self._chain_completion_handlers: List[Callable[[Task, Any], None]] = []
 
     # ============ Handler Registration Methods ============
 
     def add_completion_handler(self, handler: Callable[[Task, Any], None]):
         """Add a handler to run when tasks complete successfully."""
         self._completion_handlers.append(handler)
-        print(f"Added completion handler: {handler.__name__}")
+        logger.info(f"Added completion handler: {handler.__name__}")
+        return self
+
+    def add_chain_completion_handler(self, handler: Callable[[Task, Any], None]):
+        """Add a handler to run when the last task in a chain completes successfully."""
+        self._chain_completion_handlers.append(handler)
+        logger.info(f"Added chain completion handler: {handler.__name__}")
         return self
 
     def add_failure_handler(self, handler: Callable[[Task, Exception], None]):
@@ -73,6 +80,11 @@ class BaseWorker(ABC):
         self._completion_handlers.append(func)
         return func
 
+    def on_chain_complete(self, func):
+        """Decorator to register chain completion handler."""
+        self._chain_completion_handlers.append(func)
+        return func
+
     def on_failure(self, func):
         """Decorator to register failure handler."""
         self._failure_handlers.append(func)
@@ -93,9 +105,22 @@ class BaseWorker(ABC):
     def _run_completion_handlers(self, task: Task, result: Any):
         for handler in self._completion_handlers:
             try:
+                logger.info(
+                    f"Running completion handler: {handler.__name__} for task {task.task_id}"
+                )
                 handler(task, result)
             except Exception as e:
                 logger.error(f"Completion handler failed: {e}", exc_info=True)
+
+    def _run_chain_completion_handlers(self, task: Task, result: Any):
+        for handler in self._chain_completion_handlers:
+            try:
+                logger.info(
+                    f"Running chain completion handler: {handler.__name__} for task {task.task_id}"
+                )
+                handler(task, result)
+            except Exception as e:
+                logger.error(f"Chain completion handler failed: {e}", exc_info=True)
 
     def _run_failure_handlers(self, task: Task, error: Exception):
         for handler in self._failure_handlers:
@@ -144,13 +169,6 @@ class BaseWorker(ABC):
         ``_handle_task_result`` before this is called.
         """
         self._run_post_process_handlers(task, success)
-        if success:
-            self._run_completion_handlers(task, task.result)
-        else:
-            self._run_failure_handlers(
-                task,
-                Exception(task.error) if task.error else Exception("Unknown error"),
-            )
 
         # Do not store or delete a requeued task — it will be retried and still
         # needs its hash in Redis.  The worker that eventually completes or
@@ -172,11 +190,31 @@ class BaseWorker(ABC):
                     f"Failed to record {task.task_id} in dead-letter set: {e}",
                     exc_info=True,
                 )
+        if task.payload.get("__chain_id"):
+            logger.info(
+                f"Task {task.task_id} is part of chain {task.chain_id}; "
+                f"skipping result storage"
+            )
+            logger.info(
+                f"Task {task.task_id} is part of chain {task.chain_id}; skipping result storage"
+            )
+            if task.payload.get("__is_last_task"):
+                logger.info(
+                    f"Task {task.task_id} is the last task in chain {task.chain_id}; running chain completion handlers"
+                )
+                # If this is the last task in the chain, store its result in the
+                # result backend for the chain.
+                self._run_chain_completion_handlers(task, task.payload)
+                logger.info(
+                    f"Task {task.task_id} is the last task in chain {task.chain_id}; "
+                    f"result stored for chain"
+                )
 
-        # Persist result and remove the task metadata hash.
-        self.result.store_task(task)
+        else:
+            self.result.store_task(task)
         self._redis.delete(f"{self.task_prefix}:{task.task_id}")
         logger.info(f"Task {task.task_id} {task.status} — result stored")
+        self._run_completion_handlers(task, task.result)
 
     # ============ Core Task Lifecycle ============
 

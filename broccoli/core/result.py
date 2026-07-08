@@ -30,15 +30,9 @@ class ResultBackend:
     def store_chain(self, chain: Chain) -> None:
         """Store chain result with TTL."""
         key = f"result:{chain.chain_id}"
-        result_mapping = ResultMapping(
-            id=chain.chain_id,
-            result=chain.result,
-            status=chain.status,
-            chain=True,
-            error="",
-        )
+        print(f"Storing chain result: {chain.to_dict()}")
 
-        json_string = json.dumps(result_mapping.to_dict())
+        json_string = json.dumps(chain.to_dict())
         self._redis.set(name=key, ex=self.ttl, value=json_string)
 
     def get(self, id: str) -> any:

@@ -13,6 +13,7 @@ class Task:
     status: str = "pending"
     progress: float = 0.0
     retries: int = 0
+    chain_id: Optional[str] = None
     max_retries: int = 3
     error: Optional[str] = None
     secondary_error: Optional[str] = None
@@ -29,6 +30,7 @@ class Task:
             "status": self.status,
             "progress": str(self.progress),
             "retries": str(self.retries),
+            "chain_id": self.chain_id or "",
             "max_retries": str(self.max_retries),
             "error": self.error or "",
             "secondary_error": self.secondary_error or "",
@@ -45,6 +47,7 @@ class Task:
             task_id=data.get("task_id"),
             task_type=data.get("task_type", ""),
             status=data.get("status", "pending"),
+            chain_id=data.get("chain_id") or None,
             progress=float(data.get("progress", 0.0)),
             retries=int(data.get("retries", 0)),
             max_retries=int(data.get("max_retries", 3)),
