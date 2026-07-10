@@ -2,7 +2,8 @@
 import logging
 import signal
 import threading
-from typing import List
+from asyncio import Task
+from typing import Any, Callable, List
 
 from broccoli.workers.base_worker import BaseWorker
 
@@ -68,6 +69,7 @@ class WorkerPool:
             self.threads.append(thread)
             thread.start()
             logger.info(f"Started worker {i + 1}/{self.num_workers}")
+            print(f"Started worker {i + 1}/{self.num_workers}")
 
         # Block the calling thread until stop() or a signal fires.
         self.shutdown_flag.wait()
@@ -81,9 +83,6 @@ class WorkerPool:
     def stop(self):
         """Gracefully stop all workers and join their threads."""
         logger.info("Stopping all workers...")
-
-        # Set first so a direct stop() call (e.g. from a test or a completion
-        # handler) also unblocks start(), which may be parked on this wait().
         self.shutdown_flag.set()
 
         for worker in self.workers:
@@ -92,8 +91,55 @@ class WorkerPool:
             except Exception as e:
                 logger.error(f"Error stopping worker: {e}")
 
+        current_thread = threading.current_thread()
         for thread in self.threads:
+            if thread is current_thread:
+                continue  # don't join ourselves
             thread.join(timeout=3)
 
         self.running = False
         logger.info("All workers stopped")
+
+    def add_worker(self) -> None:
+        """Create and start one additional worker."""
+        idx = len(self.workers)
+        worker = self.worker_type(
+            redis_url=self.redis_url,
+            worker_id=f"worker-{idx + 1}",
+            **self.worker_kwargs,
+        )
+        self.workers.append(worker)
+
+        thread = threading.Thread(
+            target=worker.start,
+            name=f"Worker-{idx + 1}",
+            daemon=True,
+        )
+        self.threads.append(thread)
+        thread.start()
+        logger.info(f"Added worker {idx + 1} (total: {len(self.workers)})")
+
+    def remove_worker(self) -> bool:
+        """Stop and remove the last worker. Returns True if removed, False if at minimum."""
+        if len(self.workers) <= 1:
+            return False
+        worker = self.workers.pop()
+        thread = self.threads.pop()
+        worker.stop()
+        thread.join(timeout=3)
+        logger.info(f"Removed worker (remaining: {len(self.workers)})")
+        return True
+
+    def set_worker_count(self, target: int) -> None:
+        """Adjust the pool to exactly `target` workers (clamped to min/max if needed)."""
+        current = len(self.workers)
+        if target > current:
+            for _ in range(target - current):
+                self.add_worker()
+        elif target < current:
+            for _ in range(current - target):
+                self.remove_worker()
+
+    def add_worker_completion_handler(self, handler: Callable[[Task, Any], None]):
+        for worker in self.workers:
+            worker.add_completion_handler(handler)

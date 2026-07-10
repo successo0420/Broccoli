@@ -56,6 +56,7 @@ from broccoli.core.task.task import Task
 from broccoli.core.task.task_queue import TaskQueue
 from broccoli.logging_config import setup_logging as configure_logging
 from broccoli.workers.async_worker import AsyncWorker
+from broccoli.workers.auto_scale_worker import AutoScalingWorkerPool
 from broccoli.workers.base_worker import BaseWorker
 from broccoli.workers.chain_worker import ChainWorker
 from broccoli.workers.hybrid_worker import HybridWorker
@@ -211,16 +212,26 @@ def cmd_worker_start(args):
         )
 
     if args.pool:
-        pool = WorkerPool(
+        if args.autoscale:
+            pool_class = AutoScalingWorkerPool
+        else:
+            pool_class = WorkerPool
+
+        pool = pool_class(
             worker_type=worker_class,
             num_workers=args.num_workers,
             redis_url=args.redis_url,
+            min_workers=args.min_workers,
+            max_workers=args.max_workers,
+            scale_up_threshold=args.scale_up_threshold,
+            scale_down_threshold=args.scale_down_threshold,
+            check_interval=args.check_interval,
+            cooldown_seconds=args.cooldown,
+            queue_name=queue_name,
+            task_prefix=args.task_prefix,
             **worker_kwargs,
         )
         pool.start()
-    else:
-        worker = worker_class(redis_url=args.redis_url, **worker_kwargs)
-        worker.start()
 
 
 # ============ Queue commands ============
@@ -380,7 +391,10 @@ def cmd_dead_requeue(args):
     """Requeue a dead-letter task (retry it)."""
     q = get_queue(args)
     if not q.requeue_dead(args.task_id):
-        print(f"Task {args.task_id} could not be requeued from dead-letter", file=sys.stderr)
+        print(
+            f"Task {args.task_id} could not be requeued from dead-letter",
+            file=sys.stderr,
+        )
         sys.exit(1)
     print(f"Requeued task {args.task_id}")
 
@@ -467,6 +481,47 @@ def create_parser():
         type=int,
         default=4,
         help="Number of workers in pool (default: 4)",
+    )
+    start_parser.add_argument(
+        "--autoscale",
+        action="store_true",
+        help="Enable automatic scaling based on queue length",
+    )
+    start_parser.add_argument(
+        "--min-workers",
+        type=int,
+        default=1,
+        help="Minimum workers for autoscaling (default: 1)",
+    )
+    start_parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=10,
+        help="Maximum workers for autoscaling (default: 10)",
+    )
+    start_parser.add_argument(
+        "--scale-up-threshold",
+        type=int,
+        default=50,
+        help="Runnable tasks to trigger scale-up (default: 50)",
+    )
+    start_parser.add_argument(
+        "--scale-down-threshold",
+        type=int,
+        default=10,
+        help="Runnable tasks to trigger scale-down (default: 10)",
+    )
+    start_parser.add_argument(
+        "--check-interval",
+        type=int,
+        default=10,
+        help="Seconds between scaling checks (default: 10)",
+    )
+    start_parser.add_argument(
+        "--cooldown",
+        type=int,
+        default=30,
+        help="Seconds to wait between scaling actions (default: 30)",
     )
     start_parser.add_argument(
         "--redis-url",
