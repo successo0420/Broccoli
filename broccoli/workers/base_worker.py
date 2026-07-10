@@ -113,13 +113,13 @@ class BaseWorker(ABC):
 
     # ============ Handler Execution Methods ============
 
-    def _run_completion_handlers(self, task: Task, result: Any):
+    def _run_completion_handlers(self, *args, **kwargs):
         for handler in self._completion_handlers:
             try:
                 logger.info(
-                    f"Running completion handler: {handler.__name__} for task {task.task_id}"
+                    f"Running completion handler: {handler.__name__} for worker {self.worker_id}"
                 )
-                handler(task, result)
+                handler(*args, **kwargs)
             except Exception as e:
                 logger.error(f"Completion handler failed: {e}", exc_info=True)
 
@@ -224,7 +224,6 @@ class BaseWorker(ABC):
             self.result.store_task(task)
             logger.info(f"Task {task.task_id} {task.status} — result stored")
         self._redis.delete(f"{self.task_prefix}:{task.task_id}")
-        self._run_completion_handlers(task, task.result)
 
     # ============ Core Task Lifecycle ============
 
@@ -336,7 +335,9 @@ class BaseWorker(ABC):
                 task = self.queue.pop()
                 backoff = 1  # reset after any successful Redis round-trip
                 if task is None:
-                    continue
+                    if len(self._completion_handlers) > 0:
+                        self._run_completion_handlers()
+                    return None
 
                 logger.info(
                     f"Worker {self.worker_id} processing task "

@@ -8,8 +8,10 @@ from broccoli.core.task.task import Task
 from broccoli.core.task.task_queue import TaskQueue
 from broccoli.core.task.task_registry import TaskRegistry
 from broccoli.logging_config import setup_logging
+from broccoli.workers.async_worker import AsyncWorker
 from broccoli.workers.auto_scale_worker import AutoScalingWorkerPool
 from broccoli.workers.base_worker import BaseWorker
+from broccoli.workers.hybrid_worker import HybridWorker
 from broccoli.workers.threaded_worker import ThreadedWorker
 
 # setup_logging()
@@ -35,7 +37,7 @@ def error_task(payload: dict) -> dict:
 
 
 queue = TaskQueue(queue_name="tasks:queue")  # or chain_tasks:queue
-for i in range(2000):
+for i in range(500):
     task = Task(
         task_type="error_task",
         payload={"test": "data"},
@@ -45,12 +47,11 @@ for i in range(2000):
     # print(f"Pushed task {task.task_id}")
 
 start = time.time()
-worker = AutoScalingWorkerPool(worker_type=ThreadedWorker, check_interval=1)
+worker = AutoScalingWorkerPool(check_interval=1)
 
 
-def on_complete(task: Task, result: dict):
+def on_complete():
     worker.stop()
-    print(f"Task {task.task_id} completed with result: {result}")
 
 
 worker.add_worker_completion_handler(on_complete)

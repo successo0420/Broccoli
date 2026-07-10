@@ -129,9 +129,11 @@ class ThreadedWorker(BaseWorker):
                 task = self.queue.pop()
                 backoff = 1  # reset after any successful Redis round-trip
                 if task is None:
+                    if len(self._completion_handlers) > 0:
+                        self._run_completion_handlers()
+                        return
                     time.sleep(0.05)
                     continue
-
                 with self.task_lock:
                     self.active_tasks[task.task_id] = task
 

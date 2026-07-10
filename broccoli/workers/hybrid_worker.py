@@ -175,9 +175,7 @@ class HybridWorker(BaseWorker):
         self._cleanup_task(task)
 
         # Fire user-facing callbacks.
-        if success:
-            self._run_completion_handlers(task, task.result)
-        else:
+        if not success:
             error = Exception(task.error) if task.error else Exception("Task failed")
             self._run_failure_handlers(task, error)
 
@@ -265,6 +263,9 @@ class HybridWorker(BaseWorker):
                 continue
 
             if task is None:
+                if len(self._completion_handlers) > 0:
+                    self._run_completion_handlers()
+                    return
                 await asyncio.sleep(0.05)
                 continue
 

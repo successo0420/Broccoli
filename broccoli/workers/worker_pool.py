@@ -69,7 +69,6 @@ class WorkerPool:
             self.threads.append(thread)
             thread.start()
             logger.info(f"Started worker {i + 1}/{self.num_workers}")
-            print(f"Started worker {i + 1}/{self.num_workers}")
 
         # Block the calling thread until stop() or a signal fires.
         self.shutdown_flag.wait()

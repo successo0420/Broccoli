@@ -134,6 +134,9 @@ class AsyncWorker(BaseWorker):
                 backoff = 1  # reset after any successful Redis round-trip
 
                 if task is None:
+                    if len(self._completion_handlers) > 0:
+                        self._run_completion_handlers()
+                        return
                     await asyncio.sleep(0.05)
                     continue
 
