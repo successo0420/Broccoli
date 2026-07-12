@@ -337,7 +337,7 @@ class BaseWorker(ABC):
                 if task is None:
                     if len(self._completion_handlers) > 0:
                         self._run_completion_handlers()
-                    return None
+                    continue
 
                 logger.info(
                     f"Worker {self.worker_id} processing task "

@@ -103,7 +103,7 @@ class TaskChain:
                     "__is_last_task": last_task,
                 },
                 max_retries=task_config.get("max_retries", 3),
-                depends_on=prev_task_id,
+                depends_on=[prev_task_id],
             )
             self.queue.push(task)
             prev_task_id = task.task_id
@@ -121,7 +121,7 @@ class TaskChain:
                 task_type=completion_task,
                 payload=comp_payload,
                 chain_id=self.chain_id,
-                depends_on=last_task_id,
+                depends_on=[last_task_id],
                 max_retries=3,
             )
             self.queue.push(comp_task)

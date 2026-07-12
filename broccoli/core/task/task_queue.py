@@ -1,7 +1,8 @@
 # broccoli/core/task/task_queue.py
+import json
 import logging
 import time
-from typing import Optional
+from typing import List, Optional
 
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.task.task import Task
@@ -13,25 +14,32 @@ logger = logging.getLogger(__name__)
 _FIFO_TIER_SIZE = 1_000_000_000_000
 
 # Redis field used to carry a task's original priority through the waiting state
-# so it can be restored when the dependency is released.
+# so it can be restored when dependencies are released.
 _PRIORITY_FIELD = "_broccoli_priority"
 _DEAD_LETTER_PREFIX = "dl"
+
+# New field to track how many dependencies are still incomplete for a waiting task.
+# Stored under this key in the task's hash. When it reaches 0, the task is enqueued.
+_REMAINING_DEPS_FIELD = "_remaining_deps"
 
 
 class TaskQueue:
     """
-    Priority queue backed by three Redis structures:
+    Priority queue backed by Redis structures.
 
-    ``<base>:queue``       — sorted set of runnable task IDs
-                             score = priority_tier * _FIFO_TIER_SIZE + monotonic_seq
-    ``<base>:processing``  — sorted set of in-flight task IDs
-                             score = Unix timestamp of when the task was popped
-                             (used for crash recovery, not for ordering)
-    ``<base>:sequence``    — monotonic counter for FIFO ordering within a priority tier
-    ``dependency:<id>``    — set of task IDs waiting for task <id> to complete
+    Supports multiple dependencies per task. Tasks with unresolved dependencies
+    are stored in sets associated with each dependency (``dependency:<id>``).
+    A counter (``_remaining_deps``) tracks how many dependencies are still pending.
+    When all dependencies complete, the task is atomically enqueued.
 
-    Dependency resolution happens at *push time* and *completion time*, never
-    inside ``pop()``.  Workers only ever see runnable tasks.
+    Structures:
+        ``<base>:queue``       — sorted set of runnable task IDs
+                                 score = priority_tier * _FIFO_TIER_SIZE + monotonic_seq
+        ``<base>:processing``  — sorted set of in-flight task IDs
+                                 score = Unix timestamp of when popped (for crash recovery)
+        ``<base>:sequence``    — monotonic counter for FIFO ordering within a priority tier
+        ``dependency:<id>``    — set of task IDs waiting for task <id> to complete
+        ``<task_prefix>:<id>`` — hash storing all task metadata
     """
 
     def __init__(
@@ -57,28 +65,137 @@ class TaskQueue:
         self.sequence_key = f"{base}:sequence"
         self.dead_letter_key = f"{self.task_prefix}:dead_letter"
 
-        # Atomically register a dependency or enqueue immediately if parent is done.
-        self._push_with_dependency_script = self._redis.register_script(
-            """
-            local parent_status = redis.call('HGET', KEYS[1], 'status')
+        # ------------------------------------------------------------------
+        # Lua script for pushing a task with multiple dependencies.
+        #
+        # KEYS layout:
+        #   KEYS[1] = task_hash_key (e.g., "task:abc123")
+        #   KEYS[2] = queue_key (sorted set of runnable)
+        #   KEYS[3] = sequence_key (counter)
+        #   KEYS[4] = parent_hash_key for dependency 1
+        #   KEYS[5] = dependency_set_key for dependency 1 (e.g., "dependency:parent1")
+        #   KEYS[6] = parent_hash_key for dependency 2
+        #   KEYS[7] = dependency_set_key for dependency 2
+        #   ... and so on (paired).
+        #
+        # ARGV:
+        #   ARGV[1] = task_id
+        #   ARGV[2] = priority (int)
+        #   ARGV[3] = tier_size (int)
+        #   ARGV[4] = priority_field name (string)
+        #
+        # Returns:
+        #   1 if all dependencies are already completed → task enqueued immediately
+        #   0 if at least one dependency is incomplete → task set to 'waiting'
+        # ------------------------------------------------------------------
+        self._push_with_dependencies_script = self._redis.register_script("""
+            local task_hash_key = KEYS[1]
+            local queue_key = KEYS[2]
+            local seq_key = KEYS[3]
             local task_id = ARGV[1]
             local priority = tonumber(ARGV[2]) or 0
             local tier_size = tonumber(ARGV[3]) or 1000000000000
             local priority_field = ARGV[4]
 
-            if parent_status == 'completed' then
-                local seq = redis.call('INCR', KEYS[5])
-                local score = (priority * tier_size) + seq
-                redis.call('ZADD', KEYS[2], score, task_id)
-                redis.call('HSET', KEYS[4], 'status', 'pending', priority_field, tostring(priority))
-                return 1
+            local remaining = 0
+            -- Iterate over pairs of keys (parent_hash, dep_set)
+            -- Note: KEYS[4..N] are pairs; we increment by 2 each time.
+            local i = 4
+            while i <= #KEYS do
+                local parent_hash_key = KEYS[i]
+                local dep_set_key = KEYS[i+1]
+                -- Check if the parent is already completed
+                local status = redis.call('HGET', parent_hash_key, 'status')
+                if status ~= 'completed' then
+                    -- Parent not done → register this task as waiting on it
+                    redis.call('SADD', dep_set_key, task_id)
+                    remaining = remaining + 1
+                end
+                i = i + 2
             end
 
-            redis.call('SADD', KEYS[3], task_id)
-            redis.call('HSET', KEYS[4], 'status', 'waiting', priority_field, tostring(priority))
-            return 0
-            """
-        )
+            if remaining == 0 then
+                -- All dependencies are already completed → enqueue now
+                local seq = redis.call('INCR', seq_key)
+                local score = (priority * tier_size) + seq
+                redis.call('ZADD', queue_key, score, task_id)
+                redis.call('HSET', task_hash_key,
+                    'status', 'pending',
+                    priority_field, tostring(priority)
+                )
+                return 1
+            else
+                -- Some dependencies are incomplete → store remaining count
+                redis.call('HSET', task_hash_key,
+                    'status', 'waiting',
+                    priority_field, tostring(priority),
+                    '_remaining_deps', tostring(remaining)
+                )
+                return 0
+            end
+        """)
+
+        # ------------------------------------------------------------------
+        # Lua script for completing a task and releasing its dependents.
+        #
+        # KEYS layout:
+        #   KEYS[1] = task_hash_key (the completed task) – unused but kept for symmetry
+        #   KEYS[2] = dependency_set_key (e.g., "dependency:task_id")
+        #   KEYS[3] = queue_key (sorted set)
+        #   KEYS[4] = sequence_key (counter)
+        #
+        # ARGV:
+        #   ARGV[1] = tier_size (int)
+        #   ARGV[2] = priority_field name (string)
+        #   ARGV[3] = remaining_deps_field name (string)
+        #   ARGV[4] = task_prefix (string, used to build hash keys for dependents)
+        #
+        # For each waiting task, decrement its remaining dependency count.
+        # When it reaches 0, enqueue the task with its restored priority.
+        # Finally, delete the dependency set.
+        # ------------------------------------------------------------------
+        self._complete_script = self._redis.register_script("""
+            local dep_set_key = KEYS[2]
+            local queue_key = KEYS[3]
+            local seq_key = KEYS[4]
+            local tier_size = tonumber(ARGV[1]) or 1000000000000
+            local priority_field = ARGV[2]
+            local remaining_field = ARGV[3]
+            local task_prefix = ARGV[4]
+
+            -- Get all tasks waiting on this completed task
+            local waiting_ids = redis.call('SMEMBERS', dep_set_key)
+            for _, wid in ipairs(waiting_ids) do
+                local task_key = task_prefix .. ':' .. wid
+                -- Read the current remaining dependency count
+                local remaining = redis.call('HGET', task_key, remaining_field)
+                if remaining then
+                    remaining = tonumber(remaining) - 1
+                    if remaining <= 0 then
+                        -- All dependencies now satisfied → enqueue
+                        local priority = redis.call('HGET', task_key, priority_field) or 0
+                        priority = tonumber(priority) or 0
+                        local seq = redis.call('INCR', seq_key)
+                        local score = (priority * tier_size) + seq
+                        redis.call('ZADD', queue_key, score, wid)
+                        redis.call('HSET', task_key,
+                            'status', 'pending',
+                            remaining_field, '0'
+                        )
+                    else
+                        -- Still waiting on other dependencies → update count
+                        redis.call('HSET', task_key, remaining_field, tostring(remaining))
+                    end
+                else
+                    -- If missing, the task may have been enqueued already; skip.
+                    -- This can happen if dependencies are released multiple times,
+                    -- but we only ever call complete() once per task.
+                end
+            end
+
+            -- Clean up the dependency set for this completed task
+            redis.call('DEL', dep_set_key)
+        """)
 
     # ------------------------------------------------------------------
     # Public API
@@ -88,38 +205,42 @@ class TaskQueue:
         """
         Persist task metadata then either enqueue it or register it as waiting.
 
-        If the task has no dependency, or its dependency is already completed,
-        it goes straight into the runnable queue.  Otherwise it is stored as
-        ``waiting`` and added to ``dependency:<parent_id>`` so ``complete()``
-        can release it later.
+        If the task has no dependencies, it goes straight into the runnable queue.
+        If it has dependencies, we atomically check each dependency's status:
+          - If all are already completed, the task is enqueued immediately.
+          - Otherwise, the task is added to each incomplete dependency's waiting set
+            and its ``_remaining_deps`` counter is set to the number of incomplete deps.
 
-        Dependency registration is atomic via a Lua script:
-          - If parent is already completed, task is enqueued immediately.
-          - Otherwise task is registered under dependency:<parent_id> and set waiting.
+        Dependency registration is atomic via a Lua script.
         """
         # Always persist task metadata first so workers can read it after pop().
         self._redis.hset(f"{self.task_prefix}:{task.task_id}", mapping=task.to_dict())
 
         if task.depends_on:
-            result = self._push_with_dependency_script(
-                keys=[
-                    f"{self.task_prefix}:{task.depends_on}",
-                    self.queue_key,
-                    f"dependency:{task.depends_on}",
-                    f"{self.task_prefix}:{task.task_id}",
-                    self.sequence_key,
-                ],
-                args=[task.task_id, str(priority), str(_FIFO_TIER_SIZE), _PRIORITY_FIELD],
-            )
+            # Build the key list for the Lua script:
+            #   [task_hash, queue, seq, (parent_hash, dep_set) for each dep]
+            keys = [
+                f"{self.task_prefix}:{task.task_id}",  # KEYS[1]
+                self.queue_key,  # KEYS[2]
+                self.sequence_key,  # KEYS[3]
+            ]
+            for dep_id in task.depends_on:
+                keys.append(f"{self.task_prefix}:{dep_id}")  # parent hash
+                keys.append(f"dependency:{dep_id}")  # waiting set
+
+            args = [
+                task.task_id,
+                str(priority),
+                str(_FIFO_TIER_SIZE),
+                _PRIORITY_FIELD,
+            ]
+            result = self._push_with_dependencies_script(keys=keys, args=args)
             if int(result) == 1:
                 logger.debug(
-                    f"Task {task.task_id}: dependency {task.depends_on} already "
-                    "completed, enqueued immediately"
+                    f"Task {task.task_id} enqueued immediately (all deps done)"
                 )
             else:
-                logger.debug(
-                    f"Task {task.task_id} waiting on dependency {task.depends_on}"
-                )
+                logger.debug(f"Task {task.task_id} waiting on dependencies")
         else:
             self._enqueue(task.task_id, priority)
 
@@ -174,27 +295,30 @@ class TaskQueue:
         Called after a task finishes successfully.
 
         1. Removes the task from the processing set.
-        2. Reads any tasks that were waiting on this one and enqueues them,
-           restoring their original priority.
+        2. Reads any tasks that were waiting on this one and decrements their
+           remaining dependency counter. When the counter reaches zero, they are
+           enqueued with their original priority.
         3. Deletes the dependency set.
+
+        The entire release process is atomic via Lua script.
         """
         task_id = task.task_id
         self._redis.zrem(self.processing_key, task_id)
 
         dep_key = f"dependency:{task_id}"
-        waiting_ids = self._redis.smembers(dep_key)
-        if waiting_ids:
-            for raw_id in waiting_ids:
-                wid = raw_id.decode() if isinstance(raw_id, bytes) else raw_id
-                # Restore the priority the caller supplied when pushing the waiting task.
-                raw_pri = self._redis.hget(f"{self.task_prefix}:{wid}", _PRIORITY_FIELD)
-                priority = int(raw_pri) if raw_pri else 0
-                self._enqueue(wid, priority)
-                logger.info(
-                    f"Released waiting task {wid} "
-                    f"(dependency {task_id} completed, priority={priority})"
-                )
-            self._redis.delete(dep_key)
+        keys = [
+            f"{self.task_prefix}:{task_id}",  # KEYS[1] (unused, but kept)
+            dep_key,  # KEYS[2]
+            self.queue_key,  # KEYS[3]
+            self.sequence_key,  # KEYS[4]
+        ]
+        args = [
+            str(_FIFO_TIER_SIZE),
+            _PRIORITY_FIELD,
+            _REMAINING_DEPS_FIELD,
+            self.task_prefix,
+        ]
+        self._complete_script(keys=keys, args=args)
 
     def fail(self, task: Task) -> None:
         """Remove a permanently failed (or skipped) task from the processing set."""
@@ -251,6 +375,9 @@ class TaskQueue:
         matching the behaviour of ``complete()`` when it releases dependents.
         Without this, every retry would silently reset to priority 0 and could
         jump ahead of lower-priority tasks still waiting in the queue.
+
+        Note: Dependencies have already been satisfied when the task was first
+        enqueued, so we can safely re-enqueue without re-checking deps.
         """
         self._redis.zrem(self.processing_key, task_id)
         if priority is None:
@@ -313,9 +440,14 @@ class TaskQueue:
         seq = self._redis.incr(self.sequence_key)
         score = priority * _FIFO_TIER_SIZE + seq
         self._redis.zadd(self.queue_key, {task_id: score})
+        # Reset remaining deps to 0 and set status to pending
         self._redis.hset(
             f"{self.task_prefix}:{task_id}",
-            mapping={"status": "pending", _PRIORITY_FIELD: str(priority)},
+            mapping={
+                "status": "pending",
+                _PRIORITY_FIELD: str(priority),
+                _REMAINING_DEPS_FIELD: "0",  # no remaining deps
+            },
         )
         logger.debug(f"Enqueued task {task_id} (priority={priority}, seq={seq})")
 
@@ -327,14 +459,14 @@ class TaskQueue:
         runnable, processing = pipe.execute()
         return runnable == 0 and processing == 0
 
-    def get_waiting_for(self, task_id: str) -> list:
+    def get_waiting_for(self, task_id: str) -> List[str]:
         """Return the IDs of tasks currently blocked on ``task_id``."""
         return [
             tid.decode() if isinstance(tid, bytes) else tid
             for tid in self._redis.smembers(f"dependency:{task_id}")
         ]
 
-    def get_waiting_tasks(self) -> list:
+    def get_waiting_tasks(self) -> List[str]:
         """Return all task IDs currently marked as waiting."""
         waiting = []
         for key in self._redis.scan_iter(match=f"{self.task_prefix}:*"):
