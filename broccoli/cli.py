@@ -59,6 +59,7 @@ from broccoli.workers.async_worker import AsyncWorker
 from broccoli.workers.auto_scale_worker import AutoScalingWorkerPool
 from broccoli.workers.base_worker import BaseWorker
 from broccoli.workers.chain_worker import ChainWorker
+from broccoli.workers.gpu_worker import GPUWorker
 from broccoli.workers.hybrid_worker import HybridWorker
 from broccoli.workers.threaded_worker import ThreadedWorker
 from broccoli.workers.worker_pool import WorkerPool
@@ -166,6 +167,7 @@ def cmd_worker_start(args):
         "async": AsyncWorker,
         "hybrid": HybridWorker,
         "chain": ChainWorker,
+        "gpu": GPUWorker,
     }
     worker_class = worker_classes[args.type]
 
@@ -194,6 +196,8 @@ def cmd_worker_start(args):
     elif args.type == "hybrid":
         worker_kwargs["thread_workers"] = args.thread_workers
         worker_kwargs["async_tasks"] = args.async_tasks
+    elif args.type == "gpu":
+        worker_kwargs["gpu_id"] = args.gpu_id
     # ChainWorker inherits BaseWorker and uses default args; no extra needed
 
     # Optionally recover stalled tasks before starting
@@ -472,6 +476,18 @@ def create_parser():
         choices=["base", "threaded", "async", "hybrid", "chain"],
         default="threaded",
         help="Worker type (default: threaded)",
+    )
+    start_parser.add_argument(
+        "--type",
+        choices=["base", "threaded", "async", "hybrid", "chain", "gpu"],
+        default="hybrid",
+        help="Worker type",
+    )
+    start_parser.add_argument(
+        "--gpu-id",
+        type=int,
+        default=0,
+        help="GPU device ID to use (only for 'gpu' type)",
     )
     start_parser.add_argument(
         "--pool", action="store_true", help="Run multiple workers in a pool"
