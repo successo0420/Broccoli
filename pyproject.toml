@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "broccoli-workers"
-version = "0.1.0"
+version = "0.1.1"
 description = "Distributed task queue with priorities, dependencies, and chains, backed by Redis"
 readme = "README.md"
 authors = [

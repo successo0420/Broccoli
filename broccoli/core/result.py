@@ -36,7 +36,7 @@ class ResultBackend:
         key = f"result:{id}"
         data = self._redis.get(key)
         if data:
-            return ResultMapping.from_dict(json.loads(data))
+            return data
         return None
 
     def get_dead_letter_task_result(self, id: str) -> any:
@@ -44,33 +44,5 @@ class ResultBackend:
         key = f"dl:{id}"
         data = self._redis.get(key)
         if data:
-            return ResultMapping.from_dict(json.loads(data))
+            return data
         return None
-
-
-@dataclass
-class ResultMapping:
-    id: str
-    result: any
-    status: str
-    chain: bool
-    error: str = ""  # Optional error field for tasks
-
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "result": json.dumps(self.result),
-            "status": self.status,
-            "chain": self.chain,
-            "error": self.error,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "ResultMapping":
-        return cls(
-            id=data.get("id"),
-            result=json.loads(data.get("result", "{}")),
-            status=data.get("status", "unknown"),
-            chain=data.get("chain", False),
-            error=data.get("error", ""),
-        )
