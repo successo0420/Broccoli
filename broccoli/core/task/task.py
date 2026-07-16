@@ -23,6 +23,30 @@ class Task:
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: Optional[str] = None
 
+    @staticmethod
+    def _normalize_redis_mapping(data: dict) -> dict:
+        normalized = {}
+        for key, value in data.items():
+            if isinstance(key, bytes):
+                key = key.decode()
+            if isinstance(value, bytes):
+                value = value.decode()
+            normalized[key] = value
+        return normalized
+
+    @staticmethod
+    def _loads_json(value: Any, default: Any) -> Any:
+        if value in (None, ""):
+            return default
+        if isinstance(value, (dict, list)):
+            return value
+        if isinstance(value, bytes):
+            value = value.decode()
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return default
+
     def to_dict(self) -> dict:
         return {
             "task_id": self.task_id,
@@ -45,6 +69,7 @@ class Task:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Task":
+        data = cls._normalize_redis_mapping(data)
         return cls(
             task_id=data.get("task_id"),
             task_type=data.get("task_type", ""),
@@ -55,9 +80,9 @@ class Task:
             max_retries=int(data.get("max_retries", 3)),
             error=data.get("error") or None,
             secondary_error=data.get("secondary_error") or None,
-            payload=json.loads(data.get("payload", "{}")),
-            result=json.loads(data.get("result")) if data.get("result") else None,
-            depends_on=json.loads(data.get("depends_on", "[]")),  # parse JSON list
+            payload=cls._loads_json(data.get("payload", "{}"), {}),
+            result=cls._loads_json(data.get("result"), None),
+            depends_on=cls._loads_json(data.get("depends_on", "[]"), []),
             created_at=data.get("created_at") or datetime.now().isoformat(),
             updated_at=data.get("updated_at") or None,
         )

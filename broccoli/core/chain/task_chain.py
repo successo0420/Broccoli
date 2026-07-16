@@ -16,11 +16,26 @@ logger = logging.getLogger(__name__)
 class TaskChain:
     """Chain multiple tasks together where each task passes its result to the next."""
 
-    def __init__(self, redis_url: str = "redis://localhost:6379", chain_id: str = None):
+    def __init__(
+        self,
+        redis_url: str = "redis://localhost:6379",
+        chain_id: str = None,
+        decode_responses: bool = True,
+        redis_config: dict = None,
+    ):
+        redis_config = redis_config or {}
         self.queue = TaskQueue(
-            redis_url=redis_url, queue_name="chain_tasks:queue", task_prefix="chain"
+            redis_url=redis_url,
+            queue_name="chain_tasks:queue",
+            task_prefix="chain",
+            decode_responses=decode_responses,
+            redis_config=redis_config,
         )
-        self._redis = RedisController(redis_url).get_client()
+        self._redis = RedisController(
+            redis_url,
+            decode_responses=decode_responses,
+            **redis_config,
+        ).get_client()
         self.registry = TaskRegistry()
         self.chain_id = chain_id or str(uuid.uuid4())
 

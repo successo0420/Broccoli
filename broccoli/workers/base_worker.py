@@ -4,7 +4,7 @@ import signal
 import time
 from abc import ABC
 from datetime import datetime
-from typing import Any, Callable, List
+from typing import Any, Callable, Dict, List, Optional
 
 import redis
 
@@ -32,18 +32,34 @@ class BaseWorker(ABC):
         task_prefix: str = "task",
         recover_on_startup: bool = True,
         recover_stalled_timeout: int = 3600,
+        decode_responses: bool = True,
+        redis_config: Optional[Dict[str, Any]] = None,
     ):
         self.redis_url = redis_url
-        self._redis = RedisController(redis_url).get_client()
+        self.decode_responses = decode_responses
+        self.redis_config = redis_config or {}
+        self._redis = RedisController(
+            redis_url,
+            decode_responses=self.decode_responses,
+            **self.redis_config,
+        ).get_client()
         self.task_prefix = task_prefix
         self.queue = TaskQueue(
-            queue_name=queue_name, redis_url=redis_url, task_prefix=task_prefix
+            queue_name=queue_name,
+            redis_url=redis_url,
+            task_prefix=task_prefix,
+            decode_responses=self.decode_responses,
+            redis_config=self.redis_config,
         )
         self.registry = TaskRegistry()
         self.running = False
         self.worker_id = worker_id or f"worker-{id(self)}"
         self.task_timeout = 3600
-        self.result = ResultBackend(redis_url)
+        self.result = ResultBackend(
+            redis_url,
+            decode_responses=self.decode_responses,
+            redis_config=self.redis_config,
+        )
         self.recover_on_startup = recover_on_startup
         self.recover_stalled_timeout = recover_stalled_timeout
         self._startup_recovered = False

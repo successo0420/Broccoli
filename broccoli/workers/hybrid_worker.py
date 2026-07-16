@@ -36,6 +36,8 @@ class HybridWorker(BaseWorker):
         result_ttl: int = 86400,  # 24 hours
         recover_on_startup: bool = True,
         recover_stalled_timeout: int = 3600,
+        decode_responses: bool = True,
+        redis_config: dict = None,
     ):
         super().__init__(
             redis_url=redis_url,
@@ -44,6 +46,8 @@ class HybridWorker(BaseWorker):
             task_prefix=task_prefix,
             recover_on_startup=recover_on_startup,
             recover_stalled_timeout=recover_stalled_timeout,
+            decode_responses=decode_responses,
+            redis_config=redis_config,
         )
         self.thread_pool = ThreadPoolExecutor(max_workers=thread_workers)
         self.thread_workers = thread_workers

@@ -6,7 +6,7 @@ Broccoli is a Redis-backed Python task queue for running background work with:
 - **Dependency-aware tasks** (`depends_on`)
 - **Retries + dead-letter handling**
 - **Crash/stall recovery**
-- **Multiple worker runtimes** (base, threaded, async, hybrid, chain)
+- **Multiple worker runtimes** (base, threaded, async, hybrid, chain, gpu)
 - **CLI tooling** for operational inspection and control
 
 It is designed for teams that want Celery-like queue behavior with a smaller, explicit codebase.
@@ -45,8 +45,8 @@ It is designed for teams that want Celery-like queue behavior with a smaller, ex
 
 ### Dependency-aware execution
 
-- A task can declare `depends_on=<task_id>`
-- Dependent tasks are marked `waiting` until their parent completes
+- A task can declare `depends_on=[<task_id>, ...]` for fan-out/fan-in style waits
+- Dependent tasks are marked `waiting` until all listed parents complete
 - Dependency release is handled automatically on parent completion
 
 ### Worker execution models
@@ -56,6 +56,7 @@ It is designed for teams that want Celery-like queue behavior with a smaller, ex
 - Asyncio worker (`AsyncWorker`)
 - Hybrid worker (`HybridWorker`: async dispatch + threaded execution)
 - Chain-specific worker (`ChainWorker`)
+- GPU worker (`GPUWorker`: hybrid worker pinned to a GPU queue/device)
 
 ### Reliability and failure handling
 
@@ -118,7 +119,10 @@ pip install -e .
 from broccoli.core.task.task import Task
 from broccoli.core.task.task_queue import TaskQueue
 
-queue = TaskQueue(redis_url="redis://localhost:6379")
+queue = TaskQueue(
+    redis_url="redis://localhost:6379",
+    decode_responses=True,  # set False to work with raw Redis bytes
+)
 
 task = Task(task_type="send_email", payload={"to": "user@example.com"})
 queue.push(task, priority=1)
@@ -154,7 +158,7 @@ worker.start()
 - `status`: `pending | waiting | in_progress | completed | failed`
 - `retries`: current retry count
 - `max_retries`: retry limit
-- `depends_on`: optional parent task ID
+- `depends_on`: optional list of parent task IDs
 - `result`: handler output
 - `error`: error message for failed attempts
 
@@ -228,16 +232,22 @@ worker.registry.register_manually("my_task", my_task_handler)
 - Updates chain progress and completion state
 - Works with `TaskChain`
 
+### GPUWorker
+
+- Dedicated worker for GPU workloads (`gpu_tasks:queue`)
+- Pins execution to a selected GPU via `--gpu-id`
+- Uses `HybridWorker` execution model with GPU cache cleanup
+
 ---
 
 ## Task dependencies
 
 When pushing dependent tasks:
 
-- If parent already completed, dependent is enqueued immediately.
-- If parent not complete, dependent enters `waiting` and is linked under `dependency:<parent_id>`.
+- If all parents already completed, dependent is enqueued immediately.
+- If one or more parents are incomplete, dependent enters `waiting` and is linked under each unresolved `dependency:<parent_id>` set.
 
-On parent completion, waiting tasks are released and enqueued using their original priority.
+On parent completion, waiting tasks decrement their remaining dependency count and enqueue only when all dependencies are satisfied.
 
 Helpful APIs:
 
@@ -298,6 +308,7 @@ broccoli worker start --type threaded
 broccoli worker start --type async --concurrency 20
 broccoli worker start --type hybrid --thread-workers 8 --async-tasks 50
 broccoli worker start --type chain --chain-queue-name chain_tasks:queue
+broccoli worker start --type gpu --gpu-id 0
 broccoli worker start --type threaded --pool --num-workers 4
 ```
 
@@ -311,6 +322,12 @@ Common worker flags:
 - `--recover-stalled`
 - `--recover-stalled-timeout`
 - `--recover-on-startup` / `--no-recover-on-startup`
+- `--decode-responses` / `--no-decode-responses`
+- `--redis-socket-timeout`
+- `--redis-socket-connect-timeout`
+- `--redis-health-check-interval`
+- `--redis-retry-on-timeout` / `--no-redis-retry-on-timeout`
+- `--redis-max-connections`
 
 ### Queue inspection
 
@@ -353,6 +370,12 @@ Broccoli CLI defaults can come from environment variables:
 - `BROCCOLI_QUEUE_NAME` (default: `tasks:queue`)
 - `BROCCOLI_CHAIN_QUEUE_NAME` (default: `chain_tasks:queue`)
 - `BROCCOLI_TASK_PREFIX` (default: `task`)
+- `BROCCOLI_REDIS_DECODE_RESPONSES` (default: `true`)
+- `BROCCOLI_REDIS_SOCKET_TIMEOUT` (optional, seconds)
+- `BROCCOLI_REDIS_SOCKET_CONNECT_TIMEOUT` (optional, seconds)
+- `BROCCOLI_REDIS_HEALTH_CHECK_INTERVAL` (default: `30`)
+- `BROCCOLI_REDIS_RETRY_ON_TIMEOUT` (default: `true`)
+- `BROCCOLI_REDIS_MAX_CONNECTIONS` (optional)
 
 ---
 
@@ -360,6 +383,7 @@ Broccoli CLI defaults can come from environment variables:
 
 ### TaskQueue
 
+- constructor: `TaskQueue(redis_url=..., queue_name=..., task_prefix=..., decode_responses=True, redis_config={...})`
 - `push(task, priority=0) -> task_id`
 - `pop() -> Task | None`
 - `complete(task)`

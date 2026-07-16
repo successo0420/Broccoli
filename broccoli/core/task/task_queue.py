@@ -47,9 +47,16 @@ class TaskQueue:
         redis_url: str = "redis://localhost:6379",
         queue_name: str = "tasks:queue",
         task_prefix: str = "task",
+        decode_responses: bool = True,
+        redis_config: Optional[dict] = None,
     ):
         self.redis_url = redis_url
-        self._redis = RedisController(redis_url).get_client()
+        redis_config = redis_config or {}
+        self._redis = RedisController(
+            redis_url,
+            decode_responses=decode_responses,
+            **redis_config,
+        ).get_client()
         self.queue_key = queue_name
         self.task_prefix = task_prefix
 
