@@ -71,6 +71,41 @@ DEFAULT_CHAIN_QUEUE_NAME = os.getenv("BROCCOLI_CHAIN_QUEUE_NAME", "chain_tasks:q
 DEFAULT_TASK_PREFIX = os.getenv("BROCCOLI_TASK_PREFIX", "task")
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_int(name: str, default: Optional[int]) -> Optional[int]:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return int(raw)
+
+
+def _env_float(name: str, default: Optional[float]) -> Optional[float]:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return float(raw)
+
+
+DEFAULT_DECODE_RESPONSES = _env_bool("BROCCOLI_REDIS_DECODE_RESPONSES", True)
+DEFAULT_REDIS_SOCKET_TIMEOUT = _env_float("BROCCOLI_REDIS_SOCKET_TIMEOUT", None)
+DEFAULT_REDIS_SOCKET_CONNECT_TIMEOUT = _env_float(
+    "BROCCOLI_REDIS_SOCKET_CONNECT_TIMEOUT",
+    None,
+)
+DEFAULT_REDIS_HEALTH_CHECK_INTERVAL = _env_int(
+    "BROCCOLI_REDIS_HEALTH_CHECK_INTERVAL",
+    30,
+)
+DEFAULT_REDIS_RETRY_ON_TIMEOUT = _env_bool("BROCCOLI_REDIS_RETRY_ON_TIMEOUT", True)
+DEFAULT_REDIS_MAX_CONNECTIONS = _env_int("BROCCOLI_REDIS_MAX_CONNECTIONS", None)
+
+
 def setup_logging(verbose: int):
     """Configure logging based on verbosity count."""
     # Keep verbosity mapping intentionally simple:
@@ -130,12 +165,63 @@ def output_result(data: Any, fmt: str):
             print(data)
 
 
+def add_redis_tuning_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--decode-responses",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_DECODE_RESPONSES,
+        help="Decode Redis replies to strings (disable to receive bytes).",
+    )
+    parser.add_argument(
+        "--redis-socket-timeout",
+        type=float,
+        default=DEFAULT_REDIS_SOCKET_TIMEOUT,
+        help="Redis socket timeout in seconds.",
+    )
+    parser.add_argument(
+        "--redis-socket-connect-timeout",
+        type=float,
+        default=DEFAULT_REDIS_SOCKET_CONNECT_TIMEOUT,
+        help="Redis connect timeout in seconds.",
+    )
+    parser.add_argument(
+        "--redis-health-check-interval",
+        type=int,
+        default=DEFAULT_REDIS_HEALTH_CHECK_INTERVAL,
+        help="Redis health check interval in seconds.",
+    )
+    parser.add_argument(
+        "--redis-retry-on-timeout",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_REDIS_RETRY_ON_TIMEOUT,
+        help="Enable redis-py retry_on_timeout behavior.",
+    )
+    parser.add_argument(
+        "--redis-max-connections",
+        type=int,
+        default=DEFAULT_REDIS_MAX_CONNECTIONS,
+        help="Maximum Redis connections in the pool.",
+    )
+
+
+def redis_config_from_args(args) -> Dict[str, Any]:
+    return {
+        "socket_timeout": args.redis_socket_timeout,
+        "socket_connect_timeout": args.redis_socket_connect_timeout,
+        "health_check_interval": args.redis_health_check_interval,
+        "retry_on_timeout": args.redis_retry_on_timeout,
+        "max_connections": args.redis_max_connections,
+    }
+
+
 def get_queue(args) -> TaskQueue:
     """Instantiate a TaskQueue with CLI args."""
     return TaskQueue(
         redis_url=args.redis_url,
         queue_name=args.queue_name,
         task_prefix=args.task_prefix,
+        decode_responses=args.decode_responses,
+        redis_config=redis_config_from_args(args),
     )
 
 
@@ -145,12 +231,18 @@ def get_chain_queue(args) -> ChainQueue:
         redis_url=args.redis_url,
         queue_name=args.chain_queue_name,
         task_prefix=args.task_prefix,
+        decode_responses=args.decode_responses,
+        redis_config=redis_config_from_args(args),
     )
 
 
 def get_task_chain(args) -> TaskChain:
     """Instantiate a TaskChain with CLI args."""
-    return TaskChain(redis_url=args.redis_url)
+    return TaskChain(
+        redis_url=args.redis_url,
+        decode_responses=args.decode_responses,
+        redis_config=redis_config_from_args(args),
+    )
 
 
 # ============ Worker start ============
@@ -186,6 +278,8 @@ def cmd_worker_start(args):
         "task_prefix": args.task_prefix,
         "recover_on_startup": args.recover_on_startup,
         "recover_stalled_timeout": args.recover_stalled_timeout,
+        "decode_responses": args.decode_responses,
+        "redis_config": redis_config_from_args(args),
     }
 
     # Add type-specific kwargs
@@ -209,6 +303,8 @@ def cmd_worker_start(args):
             redis_url=args.redis_url,
             queue_name=queue_name,
             task_prefix=args.task_prefix,
+            decode_responses=args.decode_responses,
+            redis_config=redis_config_from_args(args),
         )
         recovered = temp_queue.recover_stalled(args.recover_stalled)
         logging.info(
@@ -272,7 +368,11 @@ def cmd_queue_list(args):
         )
         sys.exit(1)
 
-    redis_client = RedisController(args.redis_url).get_client()
+    redis_client = RedisController(
+        args.redis_url,
+        decode_responses=args.decode_responses,
+        **redis_config_from_args(args),
+    ).get_client()
     # keys() is acceptable here because this command is diagnostics-focused
     # and typically used against modest key counts by operators.
     task_keys = redis_client.keys(f"{args.task_prefix}:*")
@@ -355,7 +455,11 @@ def cmd_queue_waiting(args):
 
 def cmd_dead_list(args):
     """List dead-letter tasks."""
-    redis_client = RedisController(args.redis_url).get_client()
+    redis_client = RedisController(
+        args.redis_url,
+        decode_responses=args.decode_responses,
+        **redis_config_from_args(args),
+    ).get_client()
     dead_key = f"{args.task_prefix}:dead_letter"
     # zrange to get all with scores (timestamps)
     members = redis_client.zrange(dead_key, 0, -1, withscores=True)
@@ -415,7 +519,11 @@ def cmd_chain_status(args):
 
 def cmd_chain_tasks(args):
     """List tasks in a chain."""
-    redis_client = RedisController(args.redis_url).get_client()
+    redis_client = RedisController(
+        args.redis_url,
+        decode_responses=args.decode_responses,
+        **redis_config_from_args(args),
+    ).get_client()
     tasks_json = redis_client.get(f"{args.task_prefix}:{args.chain_id}:tasks")
     if not tasks_json:
         print(f"No tasks found for chain {args.chain_id}", file=sys.stderr)
@@ -430,7 +538,11 @@ def cmd_chain_tasks(args):
 def cmd_health(args):
     """Check if Redis is reachable and basic queue operations work."""
     try:
-        redis_client = RedisController(args.redis_url).get_client()
+        redis_client = RedisController(
+            args.redis_url,
+            decode_responses=args.decode_responses,
+            **redis_config_from_args(args),
+        ).get_client()
         # ping() verifies connectivity + authentication permissions quickly.
         redis_client.ping()
         # Also try to get queue stats
@@ -598,6 +710,7 @@ def create_parser():
         default=True,
         help="Automatically recover stalled tasks once when each worker starts (default: on)",
     )
+    add_redis_tuning_args(start_parser)
     start_parser.set_defaults(func=cmd_worker_start)
 
     # ---------- queue ----------
@@ -610,6 +723,7 @@ def create_parser():
     stats_parser.add_argument("--redis-url", default=DEFAULT_REDIS_URL)
     stats_parser.add_argument("--queue-name", default=DEFAULT_QUEUE_NAME)
     stats_parser.add_argument("--task-prefix", default=DEFAULT_TASK_PREFIX)
+    add_redis_tuning_args(stats_parser)
     stats_parser.add_argument(
         "--format", choices=["table", "json"], default="table", help="Output format"
     )
@@ -629,6 +743,7 @@ def create_parser():
     list_parser.add_argument("--redis-url", default=DEFAULT_REDIS_URL)
     list_parser.add_argument("--queue-name", default=DEFAULT_QUEUE_NAME)
     list_parser.add_argument("--task-prefix", default=DEFAULT_TASK_PREFIX)
+    add_redis_tuning_args(list_parser)
     list_parser.add_argument("--format", choices=["table", "json"], default="table")
     list_parser.set_defaults(func=cmd_queue_list)
 
@@ -638,6 +753,7 @@ def create_parser():
     get_parser.add_argument("--redis-url", default=DEFAULT_REDIS_URL)
     get_parser.add_argument("--queue-name", default=DEFAULT_QUEUE_NAME)
     get_parser.add_argument("--task-prefix", default=DEFAULT_TASK_PREFIX)
+    add_redis_tuning_args(get_parser)
     get_parser.add_argument("--format", choices=["table", "json"], default="table")
     get_parser.set_defaults(func=cmd_queue_get)
 
@@ -649,6 +765,7 @@ def create_parser():
     waiting_parser.add_argument("--redis-url", default=DEFAULT_REDIS_URL)
     waiting_parser.add_argument("--queue-name", default=DEFAULT_QUEUE_NAME)
     waiting_parser.add_argument("--task-prefix", default=DEFAULT_TASK_PREFIX)
+    add_redis_tuning_args(waiting_parser)
     waiting_parser.add_argument("--format", choices=["table", "json"], default="table")
     waiting_parser.set_defaults(func=cmd_queue_waiting)
 
@@ -660,6 +777,7 @@ def create_parser():
     dead_list_parser = dead_subparsers.add_parser("list", help="List dead-letter tasks")
     dead_list_parser.add_argument("--redis-url", default=DEFAULT_REDIS_URL)
     dead_list_parser.add_argument("--task-prefix", default=DEFAULT_TASK_PREFIX)
+    add_redis_tuning_args(dead_list_parser)
     dead_list_parser.add_argument(
         "--format", choices=["table", "json"], default="table"
     )
@@ -672,6 +790,7 @@ def create_parser():
     dead_requeue_parser.add_argument("--redis-url", default=DEFAULT_REDIS_URL)
     dead_requeue_parser.add_argument("--queue-name", default=DEFAULT_QUEUE_NAME)
     dead_requeue_parser.add_argument("--task-prefix", default=DEFAULT_TASK_PREFIX)
+    add_redis_tuning_args(dead_requeue_parser)
     dead_requeue_parser.set_defaults(func=cmd_dead_requeue)
 
     # ---------- chain ----------
@@ -683,6 +802,7 @@ def create_parser():
     chain_status_parser.add_argument("chain_id", help="Chain ID")
     chain_status_parser.add_argument("--redis-url", default=DEFAULT_REDIS_URL)
     chain_status_parser.add_argument("--task-prefix", default=DEFAULT_TASK_PREFIX)
+    add_redis_tuning_args(chain_status_parser)
     chain_status_parser.add_argument(
         "--format", choices=["table", "json"], default="table"
     )
@@ -694,6 +814,7 @@ def create_parser():
     chain_tasks_parser.add_argument("chain_id", help="Chain ID")
     chain_tasks_parser.add_argument("--redis-url", default=DEFAULT_REDIS_URL)
     chain_tasks_parser.add_argument("--task-prefix", default=DEFAULT_TASK_PREFIX)
+    add_redis_tuning_args(chain_tasks_parser)
     chain_tasks_parser.add_argument(
         "--format", choices=["table", "json"], default="table"
     )
@@ -707,6 +828,7 @@ def create_parser():
     health_parser.add_argument("--redis-url", default=DEFAULT_REDIS_URL)
     health_parser.add_argument("--queue-name", default=DEFAULT_QUEUE_NAME)
     health_parser.add_argument("--task-prefix", default=DEFAULT_TASK_PREFIX)
+    add_redis_tuning_args(health_parser)
     health_parser.set_defaults(func=cmd_health)
 
     return parser

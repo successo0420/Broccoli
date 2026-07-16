@@ -15,6 +15,17 @@ class Chain:
     current_task: int = 0
     result: any = None
 
+    @staticmethod
+    def _normalize_redis_mapping(data: dict) -> dict:
+        normalized = {}
+        for key, value in data.items():
+            if isinstance(key, bytes):
+                key = key.decode()
+            if isinstance(value, bytes):
+                value = value.decode()
+            normalized[key] = value
+        return normalized
+
     def to_dict(self) -> dict:
         """Convert the Chain object to a dictionary."""
         return {
@@ -33,13 +44,14 @@ class Chain:
     @classmethod
     def from_dict(cls, data: dict) -> "Chain":
         """Create a Chain object from a dictionary."""
+        data = cls._normalize_redis_mapping(data)
         return cls(
             chain_id=data.get("chain_id"),
             completion_task=data.get("completion_task") or None,
             status=data.get("status", "pending"),
             completed_tasks=int(data.get("completed_tasks", 0)),
             current_task=int(data.get("current_task", 0)),
-            result=data.get("result") if data.get("result") else None,
+            result=json.loads(data.get("result")) if data.get("result") else None,
             failed=data.get("failed", "False") == "True",
             total_tasks=int(data.get("total_tasks", 0))
             if data.get("total_tasks")

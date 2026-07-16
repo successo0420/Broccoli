@@ -30,6 +30,8 @@ class ThreadedWorker(BaseWorker):
         max_workers: int = 4,
         recover_on_startup: bool = True,
         recover_stalled_timeout: int = 3600,
+        decode_responses: bool = True,
+        redis_config: dict = None,
     ):
         super().__init__(
             redis_url=redis_url,
@@ -38,6 +40,8 @@ class ThreadedWorker(BaseWorker):
             task_prefix=task_prefix,
             recover_on_startup=recover_on_startup,
             recover_stalled_timeout=recover_stalled_timeout,
+            decode_responses=decode_responses,
+            redis_config=redis_config,
         )
         self.max_workers = max_workers
         self.executor = ThreadPoolExecutor(max_workers=max_workers)

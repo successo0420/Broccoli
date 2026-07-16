@@ -28,6 +28,8 @@ class ChainWorker(BaseWorker):
         task_prefix: str = "chain",
         recover_on_startup: bool = True,
         recover_stalled_timeout: int = 3600,
+        decode_responses: bool = True,
+        redis_config: dict = None,
     ):
         super().__init__(
             redis_url=redis_url,
@@ -36,10 +38,20 @@ class ChainWorker(BaseWorker):
             task_prefix=task_prefix,
             recover_on_startup=recover_on_startup,
             recover_stalled_timeout=recover_stalled_timeout,
+            decode_responses=decode_responses,
+            redis_config=redis_config,
         )
 
-        self.result_backend = ResultBackend(redis_url)
-        self._redis = RedisController(redis_url).get_client()
+        self.result_backend = ResultBackend(
+            redis_url,
+            decode_responses=decode_responses,
+            redis_config=redis_config,
+        )
+        self._redis = RedisController(
+            redis_url,
+            decode_responses=decode_responses,
+            **(redis_config or {}),
+        ).get_client()
 
         # Hook to update chain progress after every step
         # This runs for every processed task and no-ops for non-chain payloads.
