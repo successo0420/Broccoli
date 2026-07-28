@@ -106,7 +106,7 @@ class HybridWorker(BaseWorker):
                     success = False
                 self._handle_hybrid_result(task, success)
             except Exception as e:
-                logger.exception(f"Hybrid task {task.task_id} failed: {e}")
+                logger.exception(f"Hybrid task {task.task_id} failed")
                 task.error = str(e)
                 self._handle_hybrid_result(task, False)
             finally:
@@ -166,11 +166,8 @@ class HybridWorker(BaseWorker):
                     f"dl:{task.task_id}",
                     mapping=dead_copy,
                 )
-            except Exception as e:
-                logger.error(
-                    f"Failed to record {task.task_id} in dead-letter set: {e}",
-                    exc_info=True,
-                )
+            except Exception:
+                logger.exception(f"Failed to record {task.task_id} in dead-letter set")
 
         # Persist extended result metadata with TTL.
         self._save_result(task)
@@ -251,11 +248,10 @@ class HybridWorker(BaseWorker):
                 loop = asyncio.get_running_loop()
                 task = await loop.run_in_executor(None, self.queue.pop_with_timeout, 1)
                 backoff = 1  # reset after any successful Redis round-trip
-            except redis.exceptions.RedisError as e:
-                logger.error(
-                    f"HybridWorker {self.worker_id} Redis error: {e}, "
+            except redis.exceptions.RedisError:
+                logger.exception(
+                    f"HybridWorker {self.worker_id} Redis error, "
                     f"retrying in {backoff}s",
-                    exc_info=True,
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)

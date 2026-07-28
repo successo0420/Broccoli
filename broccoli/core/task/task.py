@@ -1,6 +1,8 @@
 # video_scheduler/core/task.py
 import base64
+import binascii
 import json
+import pickle
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -66,7 +68,14 @@ class Task:
             encoded = value.encode("ascii") if isinstance(value, str) else bytes(value)
             payload = base64.b64decode(encoded)
             return cloudpickle.loads(payload)
-        except Exception:
+        except (
+            AttributeError,
+            EOFError,
+            TypeError,
+            ValueError,
+            binascii.Error,
+            pickle.PickleError,
+        ):
             return cls._loads_json(value, None)
 
     def to_dict(self) -> dict:
