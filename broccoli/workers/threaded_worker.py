@@ -89,7 +89,7 @@ class ThreadedWorker(BaseWorker):
                     task.error = f"Task timed out after {self.task_timeout}s"
                     success = False
             except Exception as e:
-                logger.error(f"Task {task.task_id} handler raised: {e}", exc_info=True)
+                logger.exception(f"Task {task.task_id} handler raised")
                 task.error = str(e)
                 success = False
 
@@ -104,9 +104,7 @@ class ThreadedWorker(BaseWorker):
             # raised (e.g. a Redis error) — the task's queue state may be
             # inconsistent, so we log rather than re-running the state
             # machine on it a second time.
-            logger.error(
-                f"Task {task.task_id} failed outside handler: {e}", exc_info=True
-            )
+            logger.exception(f"Task {task.task_id} failed outside handler")
         finally:
             with self.task_lock:
                 self.active_tasks.pop(task.task_id, None)
@@ -147,18 +145,15 @@ class ThreadedWorker(BaseWorker):
                     f"(active: {active_count + 1}/{self.max_workers})"
                 )
 
-            except redis.exceptions.RedisError as e:
-                logger.error(
-                    f"ThreadedWorker {self.worker_id} Redis error: {e}, "
+            except redis.exceptions.RedisError:
+                logger.exception(
+                    f"ThreadedWorker {self.worker_id} Redis error, "
                     f"retrying in {backoff}s",
-                    exc_info=True,
                 )
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 60)
-            except Exception as e:
-                logger.error(
-                    f"ThreadedWorker {self.worker_id} loop error: {e}", exc_info=True
-                )
+            except Exception:
+                logger.exception(f"ThreadedWorker {self.worker_id} loop error")
                 time.sleep(1)
 
         self.executor.shutdown(wait=True)

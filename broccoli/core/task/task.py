@@ -1,9 +1,14 @@
 # video_scheduler/core/task.py
+import base64
+import binascii
 import json
+import pickle
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, Optional
+
+import cloudpickle
 
 
 @dataclass
@@ -18,7 +23,7 @@ class Task:
     secondary_error: Optional[str] = None
     payload: dict = field(default_factory=dict)
     result: Any = None
-    depends_on: Optional[List[str]] = None  # now a list of task IDs
+    depends_on: Optional[list[str]] = None  # now a list of task IDs
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: Optional[str] = None
 
@@ -46,6 +51,33 @@ class Task:
         except (TypeError, ValueError):
             return default
 
+    @staticmethod
+    def _dumps_result(value: Any) -> str:
+        if value is None:
+            return ""
+        payload = cloudpickle.dumps(value)
+        return base64.b64encode(payload).decode("ascii")
+
+    @classmethod
+    def _loads_result(cls, value: Any) -> Any:
+        if value in (None, ""):
+            return None
+        if not isinstance(value, (str, bytes, bytearray)):
+            return value
+        try:
+            encoded = value.encode("ascii") if isinstance(value, str) else bytes(value)
+            payload = base64.b64decode(encoded)
+            return cloudpickle.loads(payload)
+        except (
+            AttributeError,
+            EOFError,
+            TypeError,
+            ValueError,
+            binascii.Error,
+            pickle.PickleError,
+        ):
+            return cls._loads_json(value, None)
+
     def to_dict(self) -> dict:
         return {
             "task_id": self.task_id,
@@ -57,7 +89,7 @@ class Task:
             "error": self.error or "",
             "secondary_error": self.secondary_error or "",
             "payload": json.dumps(self.payload),
-            "result": json.dumps(self.result) if self.result is not None else "",
+            "result": self._dumps_result(self.result),
             "depends_on": json.dumps(self.depends_on)
             if self.depends_on
             else "[]",  # JSON string
@@ -78,7 +110,7 @@ class Task:
             error=data.get("error") or None,
             secondary_error=data.get("secondary_error") or None,
             payload=cls._loads_json(data.get("payload", "{}"), {}),
-            result=cls._loads_json(data.get("result"), None),
+            result=cls._loads_result(data.get("result")),
             depends_on=cls._loads_json(data.get("depends_on", "[]"), []),
             created_at=data.get("created_at") or datetime.now().isoformat(),
             updated_at=data.get("updated_at") or None,

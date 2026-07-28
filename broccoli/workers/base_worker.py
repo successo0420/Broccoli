@@ -3,8 +3,9 @@ import logging
 import signal
 import time
 from abc import ABC
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Optional
 
 import redis
 
@@ -33,7 +34,7 @@ class BaseWorker(ABC):
         recover_on_startup: bool = True,
         recover_stalled_timeout: int = 3600,
         decode_responses: bool = True,
-        redis_config: Optional[Dict[str, Any]] = None,
+        redis_config: Optional[dict[str, Any]] = None,
     ):
         self.redis_url = redis_url
         self.decode_responses = decode_responses
@@ -65,10 +66,10 @@ class BaseWorker(ABC):
         self._startup_recovered = False
 
         # Handler lists
-        self._completion_handlers: List[Callable[[Task, Any], None]] = []
-        self._failure_handlers: List[Callable[[Task, Exception], None]] = []
-        self._pre_process_handlers: List[Callable[[Task], bool]] = []
-        self._post_process_handlers: List[Callable[[Task, bool], None]] = []
+        self._completion_handlers: list[Callable[[Task, Any], None]] = []
+        self._failure_handlers: list[Callable[[Task, Exception], None]] = []
+        self._pre_process_handlers: list[Callable[[Task], bool]] = []
+        self._post_process_handlers: list[Callable[[Task, bool], None]] = []
 
     # ============ Handler Registration Methods ============
 
@@ -124,15 +125,15 @@ class BaseWorker(ABC):
                     f"Running completion handler: {handler.__name__} for worker {self.worker_id}"
                 )
                 handler(*args, **kwargs)
-            except Exception as e:
-                logger.error(f"Completion handler failed: {e}", exc_info=True)
+            except Exception:
+                logger.exception("Completion handler failed")
 
     def _run_failure_handlers(self, task: Task, error: Exception):
         for handler in self._failure_handlers:
             try:
                 handler(task, error)
-            except Exception as e:
-                logger.error(f"Failure handler failed: {e}", exc_info=True)
+            except Exception:
+                logger.exception("Failure handler failed")
 
     def _run_pre_process_handlers(self, task: Task) -> bool:
         """Return False if any handler returns False or raises."""
@@ -140,8 +141,8 @@ class BaseWorker(ABC):
             try:
                 if not handler(task):
                     return False
-            except Exception as e:
-                logger.error(f"Pre-process handler failed: {e}", exc_info=True)
+            except Exception:
+                logger.exception("Pre-process handler failed")
                 return False
         return True
 
@@ -149,8 +150,8 @@ class BaseWorker(ABC):
         for handler in self._post_process_handlers:
             try:
                 handler(task, success)
-            except Exception as e:
-                logger.error(f"Post-process handler failed: {e}", exc_info=True)
+            except Exception:
+                logger.exception("Post-process handler failed")
 
     # ============ Override Hooks ============
 
@@ -197,10 +198,9 @@ class BaseWorker(ABC):
                     f"dl:{task.task_id}",
                     mapping=dead_copy,
                 )
-            except Exception as e:
-                logger.error(
-                    f"Failed to record {task.task_id} in dead-letter set: {e}",
-                    exc_info=True,
+            except Exception:
+                logger.exception(
+                    f"Failed to record {task.task_id} in dead-letter set"
                 )
         self.result.store_task(task)
         logger.info(f"Task {task.task_id} {task.status} — result stored")
@@ -225,7 +225,7 @@ class BaseWorker(ABC):
 
         except Exception as e:
             task.error = str(e)
-            logger.error(f"Task {task.task_id} failed: {e}", exc_info=True)
+            logger.exception(f"Task {task.task_id} failed")
             return False
 
     def _handle_task_result(self, task: Task, success: bool) -> None:
@@ -333,17 +333,14 @@ class BaseWorker(ABC):
                 self._handle_task_result(task, success)
                 self.post_process(task, success)
 
-            except redis.exceptions.RedisError as e:
-                logger.error(
-                    f"Worker {self.worker_id} Redis error: {e}, retrying in {backoff}s",
-                    exc_info=True,
+            except redis.exceptions.RedisError:
+                logger.exception(
+                    f"Worker {self.worker_id} Redis error, retrying in {backoff}s"
                 )
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 60)
-            except Exception as e:
-                logger.error(
-                    f"Worker {self.worker_id} encountered error: {e}", exc_info=True
-                )
+            except Exception:
+                logger.exception(f"Worker {self.worker_id} encountered error")
                 time.sleep(1)
 
         logger.info(f"Worker {self.worker_id} stopped")
