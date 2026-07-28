@@ -81,7 +81,7 @@ class AsyncWorker(BaseWorker):
                         loop.run_in_executor(None, self.process, task),
                         timeout=self.task_timeout,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.error(
                         f"Task {task.task_id} timed out after {self.task_timeout}s"
                     )

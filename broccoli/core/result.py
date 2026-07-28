@@ -1,6 +1,6 @@
 # video_scheduler/core/result.py
 import json
-from typing import Any, Optional
+from typing import Any
 
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.task.task import Task
@@ -31,7 +31,7 @@ class ResultBackend:
         json_string = json.dumps(task.to_dict())
         self._redis.set(name=key, ex=self.ttl, value=json_string)
 
-    def get_task_result(self, id: str) -> Optional[Any]:
+    def get_task_result(self, id: str) -> Any | None:
         """Retrieve task result."""
         key = f"result:{id}"
         data = self._redis.get(key)
@@ -41,7 +41,7 @@ class ResultBackend:
             return data
         return None
 
-    def get_dead_letter_task_result(self, id: str) -> Optional[Any]:
+    def get_dead_letter_task_result(self, id: str) -> Any | None:
         """Retrieve dead letter task result."""
         key = f"dl:{id}"
         data = self._redis.get(key)

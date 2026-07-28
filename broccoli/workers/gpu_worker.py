@@ -1,7 +1,6 @@
 # broccoli/workers/gpu_worker.py
 import logging
 import os
-from typing import Optional
 
 import torch
 

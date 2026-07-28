@@ -3,7 +3,8 @@ import logging
 import signal
 import threading
 from asyncio import Task
-from typing import Any, Callable, List
+from collections.abc import Callable
+from typing import Any
 
 from broccoli.workers.base_worker import BaseWorker
 
@@ -26,8 +27,8 @@ class WorkerPool:
         self.num_workers = num_workers
         self.redis_url = redis_url
         self.worker_kwargs = worker_kwargs  # e.g. max_workers=, max_concurrent=
-        self.workers: List[BaseWorker] = []  # initialised before _create_workers runs
-        self.threads: List[threading.Thread] = []
+        self.workers: list[BaseWorker] = []  # initialised before _create_workers runs
+        self.threads: list[threading.Thread] = []
         self.running = False
         self.shutdown_flag = threading.Event()
         self._create_workers()  # populate self.workers once

@@ -8,7 +8,7 @@ import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import UTC, datetime
 
 import redis
 
@@ -196,7 +196,7 @@ class HybridWorker(BaseWorker):
             "result": task.result,
             "error": task.error,
             "worker_id": self.worker_id,
-            "completed_at": datetime.now().isoformat(),
+            "completed_at": datetime.now(UTC).isoformat(),
             "retries": task.retries,
         }
         self._redis.setex(
