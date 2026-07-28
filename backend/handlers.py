@@ -1,8 +1,8 @@
 # broccoli_handlers.py
 import logging
-import pickle
 import uuid
 
+import cloudpickle
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
@@ -131,7 +131,7 @@ def load_from_redis(payload: dict) -> dict:
     data = redis_client.get(key)
     if data is None:
         raise ValueError(f"Preprocessed data {preprocessed_id} not found in Redis")
-    return pickle.loads(data)
+    return cloudpickle.loads(data)
 
 
 @registry.register("preprocess_data")
@@ -148,7 +148,7 @@ def preprocess_data(payload: dict) -> dict:
     raw_data = redis_client.get(raw_key)
     if raw_data is None:
         raise ValueError(f"Dataset {dataset_id} not found")
-    df = pickle.loads(raw_data)
+    df = cloudpickle.loads(raw_data)
 
     text_column = config.get("text_column")
     label_column = config.get("label_column")
@@ -181,7 +181,7 @@ def preprocess_data(payload: dict) -> dict:
     redis_client.setex(
         f"preprocessed:{preprocessed_id}",
         3600 * 24 * 7,  # 7 days TTL
-        pickle.dumps(
+        cloudpickle.dumps(
             {
                 "df": df,
                 "text_column": text_column,
@@ -210,7 +210,7 @@ def train_model(payload: dict) -> dict:
     preprocessed_data = redis_client.get(f"preprocessed:{preprocessed_id}")
     if preprocessed_data is None:
         raise ValueError(f"Preprocessed data {preprocessed_id} not found")
-    entry = pickle.loads(preprocessed_data)
+    entry = cloudpickle.loads(preprocessed_data)
     df = entry["df"]
     text_column = entry["text_column"]
     label_column = entry["label_column"]
@@ -247,7 +247,7 @@ def train_model(payload: dict) -> dict:
     redis_client.setex(
         f"model:{model_id}",
         3600 * 24 * 7,
-        pickle.dumps(
+        cloudpickle.dumps(
             {
                 "model": model,
                 "vectorizer": vectorizer,
@@ -327,7 +327,7 @@ def evaluate_and_store(payload: dict) -> dict:
         if stored is None:
             raise RuntimeError(f"Model {model_id} for task {task_id} was not found.")
 
-        info = pickle.loads(stored)
+        info = cloudpickle.loads(stored)
         candidates.append(
             {
                 "task_id": task_id,
@@ -354,15 +354,15 @@ def evaluate_and_store(payload: dict) -> dict:
     redis_client.setex(
         f"run_result:{run_id}",
         3600 * 24 * 7,
-        pickle.dumps(public_result),
+        cloudpickle.dumps(public_result),
     )
 
     manifest_key = f"run:{run_id}"
     raw_manifest = redis_client.get(manifest_key)
     if raw_manifest:
-        manifest = pickle.loads(raw_manifest)
+        manifest = cloudpickle.loads(raw_manifest)
         manifest["status"] = "completed"
         manifest["model_id"] = best["model_id"]
-        redis_client.setex(manifest_key, 3600 * 24 * 7, pickle.dumps(manifest))
+        redis_client.setex(manifest_key, 3600 * 24 * 7, cloudpickle.dumps(manifest))
 
     return public_result

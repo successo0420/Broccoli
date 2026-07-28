@@ -9,9 +9,6 @@ Usage examples:
   # Start a single async worker with 10 concurrent tasks
   broccoli worker start --type async --concurrency 10
 
-  # Start a chain worker (single)
-  broccoli worker start --type chain
-
   # Inspect queue stats
   broccoli queue stats
 
@@ -30,12 +27,6 @@ Usage examples:
   # Requeue a dead task (retry it)
   broccoli dead requeue <task_id>
 
-  # Get chain status
-  broccoli chain status <chain_id>
-
-  # List tasks in a chain
-  broccoli chain tasks <chain_id>
-
   # Health check (returns exit code 0 if Redis is reachable)
   broccoli health
 """
@@ -47,9 +38,6 @@ import os
 import sys
 from typing import Any, Dict, List, Optional
 
-from broccoli.core.chain.chain_queue import ChainQueue
-from broccoli.core.chain.task_chain import TaskChain
-
 # Import Broccoli components
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.task.task import Task
@@ -58,7 +46,6 @@ from broccoli.logging_config import setup_logging as configure_logging
 from broccoli.workers.async_worker import AsyncWorker
 from broccoli.workers.auto_scale_worker import AutoScalingWorkerPool
 from broccoli.workers.base_worker import BaseWorker
-from broccoli.workers.chain_worker import ChainWorker
 from broccoli.workers.gpu_worker import GPUWorker
 from broccoli.workers.hybrid_worker import HybridWorker
 from broccoli.workers.threaded_worker import ThreadedWorker
@@ -67,7 +54,6 @@ from broccoli.workers.worker_pool import WorkerPool
 # Defaults from environment variables
 DEFAULT_REDIS_URL = os.getenv("BROCCOLI_REDIS_URL", "redis://localhost:6379")
 DEFAULT_QUEUE_NAME = os.getenv("BROCCOLI_QUEUE_NAME", "tasks:queue")
-DEFAULT_CHAIN_QUEUE_NAME = os.getenv("BROCCOLI_CHAIN_QUEUE_NAME", "chain_tasks:queue")
 DEFAULT_TASK_PREFIX = os.getenv("BROCCOLI_TASK_PREFIX", "task")
 
 
@@ -225,26 +211,6 @@ def get_queue(args) -> TaskQueue:
     )
 
 
-def get_chain_queue(args) -> ChainQueue:
-    """Instantiate a ChainQueue with CLI args."""
-    return ChainQueue(
-        redis_url=args.redis_url,
-        queue_name=args.chain_queue_name,
-        task_prefix=args.task_prefix,
-        decode_responses=args.decode_responses,
-        redis_config=redis_config_from_args(args),
-    )
-
-
-def get_task_chain(args) -> TaskChain:
-    """Instantiate a TaskChain with CLI args."""
-    return TaskChain(
-        redis_url=args.redis_url,
-        decode_responses=args.decode_responses,
-        redis_config=redis_config_from_args(args),
-    )
-
-
 # ============ Worker start ============
 
 
@@ -258,16 +224,11 @@ def cmd_worker_start(args):
         "threaded": ThreadedWorker,
         "async": AsyncWorker,
         "hybrid": HybridWorker,
-        "chain": ChainWorker,
         "gpu": GPUWorker,
     }
     worker_class = worker_classes[args.type]
 
-    # Determine which queue name and task prefix to use
-    if args.type == "chain":
-        queue_name = args.chain_queue_name
-    else:
-        queue_name = args.queue_name
+    queue_name = args.queue_name
 
     # Common worker kwargs
     # Keep these shared for all worker classes so CLI behavior stays uniform
@@ -292,8 +253,6 @@ def cmd_worker_start(args):
         worker_kwargs["async_tasks"] = args.async_tasks
     elif args.type == "gpu":
         worker_kwargs["gpu_id"] = args.gpu_id
-    # ChainWorker inherits BaseWorker and uses default args; no extra needed
-
     # Optionally recover stalled tasks before starting
     # This is an explicit, one-shot recovery operation requested by the user
     # and separate from each worker's own startup recovery hook.
@@ -507,31 +466,6 @@ def cmd_dead_requeue(args):
     print(f"Requeued task {args.task_id}")
 
 
-# ============ Chain commands ============
-
-
-def cmd_chain_status(args):
-    """Get chain status."""
-    tc = get_task_chain(args)
-    status = tc.get_chain_status(args.chain_id)
-    output_result(status, args.format)
-
-
-def cmd_chain_tasks(args):
-    """List tasks in a chain."""
-    redis_client = RedisController(
-        args.redis_url,
-        decode_responses=args.decode_responses,
-        **redis_config_from_args(args),
-    ).get_client()
-    tasks_json = redis_client.get(f"{args.task_prefix}:{args.chain_id}:tasks")
-    if not tasks_json:
-        print(f"No tasks found for chain {args.chain_id}", file=sys.stderr)
-        sys.exit(1)
-    tasks = json.loads(tasks_json)
-    output_result(tasks, args.format)
-
-
 # ============ Health check ============
 
 
@@ -585,13 +519,8 @@ def create_parser():
     start_parser = worker_subparsers.add_parser("start", help="Start a worker or pool")
     start_parser.add_argument(
         "--type",
-        choices=["base", "threaded", "async", "hybrid", "chain"],
-        default="threaded",
-        help="Worker type (default: threaded)",
-    )
-    start_parser.add_argument(
         "--type",
-        choices=["base", "threaded", "async", "hybrid", "chain", "gpu"],
+        choices=["base", "threaded", "async", "hybrid", "gpu"],
         default="hybrid",
         help="Worker type",
     )
@@ -660,11 +589,6 @@ def create_parser():
         "--queue-name",
         default=DEFAULT_QUEUE_NAME,
         help=f"Queue name for regular tasks (env: BROCCOLI_QUEUE_NAME, default: {DEFAULT_QUEUE_NAME})",
-    )
-    start_parser.add_argument(
-        "--chain-queue-name",
-        default=DEFAULT_CHAIN_QUEUE_NAME,
-        help=f"Queue name for chain tasks (env: BROCCOLI_CHAIN_QUEUE_NAME, default: {DEFAULT_CHAIN_QUEUE_NAME})",
     )
     start_parser.add_argument(
         "--task-prefix",
@@ -792,33 +716,6 @@ def create_parser():
     dead_requeue_parser.add_argument("--task-prefix", default=DEFAULT_TASK_PREFIX)
     add_redis_tuning_args(dead_requeue_parser)
     dead_requeue_parser.set_defaults(func=cmd_dead_requeue)
-
-    # ---------- chain ----------
-    # Chain-focused read-only inspection commands.
-    chain_parser = subparsers.add_parser("chain", help="Inspect task chains")
-    chain_subparsers = chain_parser.add_subparsers(dest="chain_action", required=True)
-
-    chain_status_parser = chain_subparsers.add_parser("status", help="Get chain status")
-    chain_status_parser.add_argument("chain_id", help="Chain ID")
-    chain_status_parser.add_argument("--redis-url", default=DEFAULT_REDIS_URL)
-    chain_status_parser.add_argument("--task-prefix", default=DEFAULT_TASK_PREFIX)
-    add_redis_tuning_args(chain_status_parser)
-    chain_status_parser.add_argument(
-        "--format", choices=["table", "json"], default="table"
-    )
-    chain_status_parser.set_defaults(func=cmd_chain_status)
-
-    chain_tasks_parser = chain_subparsers.add_parser(
-        "tasks", help="List tasks in a chain"
-    )
-    chain_tasks_parser.add_argument("chain_id", help="Chain ID")
-    chain_tasks_parser.add_argument("--redis-url", default=DEFAULT_REDIS_URL)
-    chain_tasks_parser.add_argument("--task-prefix", default=DEFAULT_TASK_PREFIX)
-    add_redis_tuning_args(chain_tasks_parser)
-    chain_tasks_parser.add_argument(
-        "--format", choices=["table", "json"], default="table"
-    )
-    chain_tasks_parser.set_defaults(func=cmd_chain_tasks)
 
     # ---------- health ----------
     # Lightweight readiness check for automation (scripts/containers/probes).

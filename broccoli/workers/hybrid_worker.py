@@ -198,8 +198,6 @@ class HybridWorker(BaseWorker):
             "status": task.status,
             "result": task.result,
             "error": task.error,
-            "chain": bool(task.payload.get("__chain_id")),
-            "chain_id": task.payload.get("__chain_id"),
             "worker_id": self.worker_id,
             "completed_at": datetime.now().isoformat(),
             "retries": task.retries,
@@ -217,9 +215,6 @@ class HybridWorker(BaseWorker):
         ``queue.complete()`` / ``queue.fail()`` — no ``zrem`` calls here.
         """
         self._redis.delete(f"{self.task_prefix}:{task.task_id}")
-
-        if task.payload.get("__chain_id"):
-            self._redis.delete(f"chain:{task.task_id}")
 
         logger.info(f"Task {task.task_id} metadata cleaned up")
 

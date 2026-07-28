@@ -1,14 +1,14 @@
 # video_scheduler/core/result.py
 import json
+from typing import Any, Optional
 
-from broccoli.core.chain.chain import Chain
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.task.task import Task
 
 
 class ResultBackend:
     """
-    A backend for storing and retrieving task and chain results in Redis.
+    A backend for storing and retrieving task results in Redis.
     """
 
     def __init__(
@@ -31,15 +31,7 @@ class ResultBackend:
         json_string = json.dumps(task.to_dict())
         self._redis.set(name=key, ex=self.ttl, value=json_string)
 
-    def store_chain(self, chain: Chain) -> None:
-        """Store chain result with TTL."""
-        key = f"result:{chain.chain_id}"
-        print(f"Storing chain result: {chain.to_dict()}")
-
-        json_string = json.dumps(chain.to_dict())
-        self._redis.set(name=key, ex=self.ttl, value=json_string)
-
-    def get_task_result(self, id: str) -> any:
+    def get_task_result(self, id: str) -> Optional[Any]:
         """Retrieve task result."""
         key = f"result:{id}"
         data = self._redis.get(key)
@@ -49,7 +41,7 @@ class ResultBackend:
             return data
         return None
 
-    def get_dead_letter_task_result(self, id: str) -> any:
+    def get_dead_letter_task_result(self, id: str) -> Optional[Any]:
         """Retrieve dead letter task result."""
         key = f"dl:{id}"
         data = self._redis.get(key)

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "broccoli-workers"
 version = "0.1.1"
-description = "Distributed task queue with priorities, dependencies, and chains, backed by Redis"
+description = "Distributed task queue with priorities and fan-out dependencies, backed by Redis"
 readme = "README.md"
 authors = [
     { name = "Success Oguntuyi", email = "oguntuyisuccess@gmail.com" },
@@ -23,6 +23,7 @@ classifiers = [
 ]
 requires-python = ">=3.11"   # ← changed from >=3.9
 dependencies = [
+    "cloudpickle>=3.0.0",
     "redis>=4.0.0",
 ]
 
