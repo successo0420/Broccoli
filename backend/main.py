@@ -1,9 +1,9 @@
 # main.py
 import io
-import pickle
 import re
 import uuid
 
+import cloudpickle
 import handlers as broccoli_handlers
 import numpy as np
 import pandas as pd
@@ -100,7 +100,7 @@ def _get_dataset_df(dataset_id: str) -> pd.DataFrame:
     raw = redis_client.get(f"dataset:{dataset_id}")
     if raw is None:
         raise HTTPException(status_code=404, detail="Dataset not found or expired.")
-    df = pickle.loads(raw)
+    df = cloudpickle.loads(raw)
     DATASETS[dataset_id] = {"row_count": len(df), "columns": df.columns.tolist()}
     return df
 
@@ -111,7 +111,7 @@ def _get_preprocessed_bundle(preprocessed_id: str) -> dict:
         raise HTTPException(
             status_code=404, detail="Preprocessed dataset not found or expired."
         )
-    bundle = pickle.loads(raw)
+    bundle = cloudpickle.loads(raw)
     df = bundle["df"]
     label_column = bundle["label_column"]
     class_distribution = df[label_column].value_counts().to_dict()
@@ -125,16 +125,16 @@ def _get_preprocessed_bundle(preprocessed_id: str) -> dict:
 
 def _load_run_manifest(run_id: str) -> dict | None:
     raw = redis_client.get(f"run:{run_id}")
-    return pickle.loads(raw) if raw is not None else None
+    return cloudpickle.loads(raw) if raw is not None else None
 
 
 def _save_run_manifest(run_id: str, manifest: dict) -> None:
-    redis_client.setex(f"run:{run_id}", REDIS_TTL_SECONDS, pickle.dumps(manifest))
+    redis_client.setex(f"run:{run_id}", REDIS_TTL_SECONDS, cloudpickle.dumps(manifest))
 
 
 def _load_run_result(run_id: str) -> dict | None:
     raw = redis_client.get(f"run_result:{run_id}")
-    return pickle.loads(raw) if raw is not None else None
+    return cloudpickle.loads(raw) if raw is not None else None
 
 
 def _task_snapshot(task_id: str) -> dict:
@@ -170,7 +170,7 @@ async def upload_file(file: UploadFile = File(...)):
 
     dataset_id = uuid.uuid4().hex
     # Store in Redis with TTL
-    redis_client.setex(f"dataset:{dataset_id}", REDIS_TTL_SECONDS, pickle.dumps(df))
+    redis_client.setex(f"dataset:{dataset_id}", REDIS_TTL_SECONDS, cloudpickle.dumps(df))
     # Keep metadata
     DATASETS[dataset_id] = {"row_count": len(df), "columns": df.columns.tolist()}
 
@@ -241,7 +241,7 @@ async def preprocess_data(payload: dict = Body(...)):
     redis_client.setex(
         f"preprocessed:{preprocessed_id}",
         REDIS_TTL_SECONDS,
-        pickle.dumps(
+        cloudpickle.dumps(
             {
                 "df": df,
                 "text_column": text_column,
@@ -512,7 +512,7 @@ async def download_model(model_id: str, type: str = "model"):
     data = redis_client.get(f"model:{model_id}")
     if data is None:
         raise HTTPException(status_code=404, detail="Model not found.")
-    info = pickle.loads(data)
+    info = cloudpickle.loads(data)
     if type == "vectorizer":
         obj = info["vectorizer"]
         filename = f"{model_id}_vectorizer.pkl"
@@ -520,7 +520,7 @@ async def download_model(model_id: str, type: str = "model"):
         obj = info["model"]
         filename = f"{model_id}_model.pkl"
     buffer = io.BytesIO()
-    pickle.dump(obj, buffer)
+    cloudpickle.dump(obj, buffer)
     buffer.seek(0)
     return StreamingResponse(
         buffer,
@@ -541,7 +541,7 @@ async def predict(payload: dict = Body(...)):
     data = redis_client.get(f"model:{model_id}")
     if data is None:
         raise HTTPException(status_code=404, detail="Model not found.")
-    info = pickle.loads(data)
+    info = cloudpickle.loads(data)
     cfg = info.get("preprocess_config", {})
     cleaned = clean_text(text, cfg)
     vectorizer = info["vectorizer"]

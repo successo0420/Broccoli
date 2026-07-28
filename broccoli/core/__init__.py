@@ -1,4 +1,3 @@
-from broccoli.core.chain.task_chain import TaskChain
 from broccoli.core.health import HealthCheck
 from broccoli.core.result import ResultBackend
 from broccoli.core.task.task import Task
@@ -9,7 +8,6 @@ __all__ = [
     "Task",
     "TaskQueue",
     "TaskRegistry",
-    "TaskChain",
     "ResultBackend",
     "HealthCheck",
 ]

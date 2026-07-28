@@ -69,7 +69,6 @@ class BaseWorker(ABC):
         self._failure_handlers: List[Callable[[Task, Exception], None]] = []
         self._pre_process_handlers: List[Callable[[Task], bool]] = []
         self._post_process_handlers: List[Callable[[Task, bool], None]] = []
-        self._chain_completion_handlers: List[Callable[[Task, Any], None]] = []
 
     # ============ Handler Registration Methods ============
 
@@ -77,12 +76,6 @@ class BaseWorker(ABC):
         """Add a handler to run when tasks complete successfully."""
         self._completion_handlers.append(handler)
         logger.info(f"Added completion handler: {handler.__name__}")
-        return self
-
-    def add_chain_completion_handler(self, handler: Callable[[Task, Any], None]):
-        """Add a handler to run when the last task in a chain completes successfully."""
-        self._chain_completion_handlers.append(handler)
-        logger.info(f"Added chain completion handler: {handler.__name__}")
         return self
 
     def add_failure_handler(self, handler: Callable[[Task, Exception], None]):
@@ -105,11 +98,6 @@ class BaseWorker(ABC):
     def on_complete(self, func):
         """Decorator to register completion handler."""
         self._completion_handlers.append(func)
-        return func
-
-    def on_chain_complete(self, func):
-        """Decorator to register chain completion handler."""
-        self._chain_completion_handlers.append(func)
         return func
 
     def on_failure(self, func):
@@ -138,16 +126,6 @@ class BaseWorker(ABC):
                 handler(*args, **kwargs)
             except Exception as e:
                 logger.error(f"Completion handler failed: {e}", exc_info=True)
-
-    def _run_chain_completion_handlers(self, task: Task, result: Any):
-        for handler in self._chain_completion_handlers:
-            try:
-                logger.info(
-                    f"Running chain completion handler: {handler.__name__} for task {task.task_id}"
-                )
-                handler(task, result)
-            except Exception as e:
-                logger.error(f"Chain completion handler failed: {e}", exc_info=True)
 
     def _run_failure_handlers(self, task: Task, error: Exception):
         for handler in self._failure_handlers:
@@ -224,21 +202,8 @@ class BaseWorker(ABC):
                     f"Failed to record {task.task_id} in dead-letter set: {e}",
                     exc_info=True,
                 )
-        if task.payload.get("__chain_id"):
-            logger.info(
-                f"Task {task.task_id} is part of chain {task.chain_id}; skipping result storage"
-            )
-            if task.payload.get("__is_last_task"):
-                logger.info(
-                    f"Task {task.task_id} is the last task in chain {task.chain_id}; running chain completion handlers"
-                )
-                # If this is the last task in the chain, store its result in the
-                # result backend for the chain.
-
-                self._run_chain_completion_handlers(task, task.payload)
-        else:
-            self.result.store_task(task)
-            logger.info(f"Task {task.task_id} {task.status} — result stored")
+        self.result.store_task(task)
+        logger.info(f"Task {task.task_id} {task.status} — result stored")
         self._redis.delete(f"{self.task_prefix}:{task.task_id}")
 
     # ============ Core Task Lifecycle ============
@@ -319,9 +284,7 @@ class BaseWorker(ABC):
             )
 
     def _update_task(self, task: Task) -> None:
-        """Persist current task state to Redis (skipped for chain tasks)."""
-        if task.payload.get("__chain_id"):
-            return
+        """Persist current task state to Redis."""
         task.updated_at = datetime.now().isoformat()
         self._redis.hset(f"{self.task_prefix}:{task.task_id}", mapping=task.to_dict())
 

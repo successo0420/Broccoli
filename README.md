@@ -6,7 +6,7 @@ Broccoli is a Redis-backed Python task queue for running background work with:
 - **Dependency-aware tasks** (`depends_on`)
 - **Retries + dead-letter handling**
 - **Crash/stall recovery**
-- **Multiple worker runtimes** (base, threaded, async, hybrid, chain, gpu)
+- **Multiple worker runtimes** (base, threaded, async, hybrid, gpu)
 - **CLI tooling** for operational inspection and control
 
 It is designed for teams that want Celery-like queue behavior with a smaller, explicit codebase.
@@ -55,7 +55,6 @@ It is designed for teams that want Celery-like queue behavior with a smaller, ex
 - Thread pool worker (`ThreadedWorker`)
 - Asyncio worker (`AsyncWorker`)
 - Hybrid worker (`HybridWorker`: async dispatch + threaded execution)
-- Chain-specific worker (`ChainWorker`)
 - GPU worker (`GPUWorker`: hybrid worker pinned to a GPU queue/device)
 
 ### Reliability and failure handling
@@ -84,9 +83,7 @@ Broccoli primarily uses Redis sorted sets and hashes:
 - `dependency:<task_id>` — set of blocked dependents waiting for parent
 - `<task_prefix>:dead_letter` — dead-letter task IDs with failure timestamps
 - `dl:<task_id>` — dead-letter task snapshot
-- `result:<task_id>` / `result:<chain_id>` — result records with TTL
-
-For chains, additional keys like `chain:<chain_id>` and `chain:<chain_id>:tasks` are used.
+- `result:<task_id>` — result records with TTL
 
 ---
 
@@ -226,12 +223,6 @@ worker.registry.register_manually("my_task", my_task_handler)
 - Suitable for high-throughput mixed workloads
 - Config: `thread_workers`, `async_tasks`
 
-### ChainWorker
-
-- Specialized for chain orchestration
-- Updates chain progress and completion state
-- Works with `TaskChain`
-
 ### GPUWorker
 
 - Dedicated worker for GPU workloads (`gpu_tasks:queue`)
@@ -307,7 +298,6 @@ broccoli -vv ...
 broccoli worker start --type threaded
 broccoli worker start --type async --concurrency 20
 broccoli worker start --type hybrid --thread-workers 8 --async-tasks 50
-broccoli worker start --type chain --chain-queue-name chain_tasks:queue
 broccoli worker start --type gpu --gpu-id 0
 broccoli worker start --type threaded --pool --num-workers 4
 ```
@@ -316,7 +306,6 @@ Common worker flags:
 
 - `--redis-url`
 - `--queue-name`
-- `--chain-queue-name`
 - `--task-prefix`
 - `--worker-id`
 - `--recover-stalled`
@@ -347,13 +336,6 @@ broccoli dead list --format json
 broccoli dead requeue <task_id>
 ```
 
-### Chain inspection
-
-```bash
-broccoli chain status <chain_id>
-broccoli chain tasks <chain_id>
-```
-
 ### Health
 
 ```bash
@@ -368,7 +350,6 @@ Broccoli CLI defaults can come from environment variables:
 
 - `BROCCOLI_REDIS_URL` (default: `redis://localhost:6379`)
 - `BROCCOLI_QUEUE_NAME` (default: `tasks:queue`)
-- `BROCCOLI_CHAIN_QUEUE_NAME` (default: `chain_tasks:queue`)
 - `BROCCOLI_TASK_PREFIX` (default: `task`)
 - `BROCCOLI_REDIS_DECODE_RESPONSES` (default: `true`)
 - `BROCCOLI_REDIS_SOCKET_TIMEOUT` (optional, seconds)
@@ -397,11 +378,6 @@ Broccoli CLI defaults can come from environment variables:
 - `get_waiting_for(task_id) -> list[str]`
 - `get_waiting_tasks() -> list[str]`
 - `is_fully_drained() -> bool`
-
-### TaskChain
-
-- `chain(tasks, shared_payload=None, completion_task=None, completion_payload=None) -> chain_id`
-- `get_chain_status(chain_id) -> dict`
 
 ### Worker hooks
 
@@ -435,7 +411,7 @@ A growing dead-letter set often indicates handler bugs or dependency/data issues
 
 ### 5. Separate queues by workload profile
 
-Use distinct queue names/prefixes for high-latency jobs, chain jobs, or tenant isolation.
+Use distinct queue names/prefixes for high-latency jobs or tenant isolation.
 
 ---
 
