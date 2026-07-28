@@ -5,7 +5,7 @@ import json
 import pickle
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import cloudpickle
@@ -24,7 +24,7 @@ class Task:
     payload: dict = field(default_factory=dict)
     result: Any = None
     depends_on: list[str] | None = None  # now a list of task IDs
-    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     updated_at: str | None = None
 
     @staticmethod
@@ -112,6 +112,6 @@ class Task:
             payload=cls._loads_json(data.get("payload", "{}"), {}),
             result=cls._loads_result(data.get("result")),
             depends_on=cls._loads_json(data.get("depends_on", "[]"), []),
-            created_at=data.get("created_at") or datetime.now(timezone.utc).isoformat(),
+            created_at=data.get("created_at") or datetime.now(UTC).isoformat(),
             updated_at=data.get("updated_at") or None,
         )

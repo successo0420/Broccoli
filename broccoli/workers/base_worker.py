@@ -4,7 +4,7 @@ import signal
 import time
 from abc import ABC
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import redis
@@ -285,7 +285,7 @@ class BaseWorker(ABC):
 
     def _update_task(self, task: Task) -> None:
         """Persist current task state to Redis."""
-        task.updated_at = datetime.now(timezone.utc).isoformat()
+        task.updated_at = datetime.now(UTC).isoformat()
         self._redis.hset(f"{self.task_prefix}:{task.task_id}", mapping=task.to_dict())
 
     # ============ Worker Loop ============
