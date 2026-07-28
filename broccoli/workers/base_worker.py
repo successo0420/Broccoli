@@ -3,8 +3,9 @@ import logging
 import signal
 import time
 from abc import ABC
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Optional
 
 import redis
 
@@ -33,7 +34,7 @@ class BaseWorker(ABC):
         recover_on_startup: bool = True,
         recover_stalled_timeout: int = 3600,
         decode_responses: bool = True,
-        redis_config: Optional[Dict[str, Any]] = None,
+        redis_config: Optional[dict[str, Any]] = None,
     ):
         self.redis_url = redis_url
         self.decode_responses = decode_responses
@@ -65,10 +66,10 @@ class BaseWorker(ABC):
         self._startup_recovered = False
 
         # Handler lists
-        self._completion_handlers: List[Callable[[Task, Any], None]] = []
-        self._failure_handlers: List[Callable[[Task, Exception], None]] = []
-        self._pre_process_handlers: List[Callable[[Task], bool]] = []
-        self._post_process_handlers: List[Callable[[Task, bool], None]] = []
+        self._completion_handlers: list[Callable[[Task, Any], None]] = []
+        self._failure_handlers: list[Callable[[Task, Exception], None]] = []
+        self._pre_process_handlers: list[Callable[[Task], bool]] = []
+        self._post_process_handlers: list[Callable[[Task, bool], None]] = []
 
     # ============ Handler Registration Methods ============
 
@@ -125,14 +126,14 @@ class BaseWorker(ABC):
                 )
                 handler(*args, **kwargs)
             except Exception as e:
-                logger.error(f"Completion handler failed: {e}", exc_info=True)
+                logger.exception(f"Completion handler failed: {e}")
 
     def _run_failure_handlers(self, task: Task, error: Exception):
         for handler in self._failure_handlers:
             try:
                 handler(task, error)
             except Exception as e:
-                logger.error(f"Failure handler failed: {e}", exc_info=True)
+                logger.exception(f"Failure handler failed: {e}")
 
     def _run_pre_process_handlers(self, task: Task) -> bool:
         """Return False if any handler returns False or raises."""
@@ -141,7 +142,7 @@ class BaseWorker(ABC):
                 if not handler(task):
                     return False
             except Exception as e:
-                logger.error(f"Pre-process handler failed: {e}", exc_info=True)
+                logger.exception(f"Pre-process handler failed: {e}")
                 return False
         return True
 
@@ -150,7 +151,7 @@ class BaseWorker(ABC):
             try:
                 handler(task, success)
             except Exception as e:
-                logger.error(f"Post-process handler failed: {e}", exc_info=True)
+                logger.exception(f"Post-process handler failed: {e}")
 
     # ============ Override Hooks ============
 
@@ -198,10 +199,7 @@ class BaseWorker(ABC):
                     mapping=dead_copy,
                 )
             except Exception as e:
-                logger.error(
-                    f"Failed to record {task.task_id} in dead-letter set: {e}",
-                    exc_info=True,
-                )
+                logger.exception(f"Failed to record {task.task_id} in dead-letter set: {e}")
         self.result.store_task(task)
         logger.info(f"Task {task.task_id} {task.status} — result stored")
         self._redis.delete(f"{self.task_prefix}:{task.task_id}")
@@ -225,7 +223,7 @@ class BaseWorker(ABC):
 
         except Exception as e:
             task.error = str(e)
-            logger.error(f"Task {task.task_id} failed: {e}", exc_info=True)
+            logger.exception(f"Task {task.task_id} failed: {e}")
             return False
 
     def _handle_task_result(self, task: Task, success: bool) -> None:

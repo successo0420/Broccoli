@@ -1,6 +1,7 @@
 # video_scheduler/core/task_registry.py
 import logging
-from typing import Any, Callable, Dict, Optional
+from collections.abc import Callable
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -9,7 +10,7 @@ class TaskRegistry:
     """Registry for task handlers that can be executed by workers."""
 
     _instance = None
-    _handlers: Dict[str, Callable] = {}
+    _handlers: dict[str, Callable] = {}
 
     def __new__(cls):
         if cls._instance is None:
@@ -35,11 +36,11 @@ class TaskRegistry:
         """Get the handler for a task type."""
         return self._handlers.get(task_type)
 
-    def get_all_handlers(self) -> Dict[str, Callable]:
+    def get_all_handlers(self) -> dict[str, Callable]:
         """Get all registered handlers."""
         return self._handlers
 
-    def execute(self, task_type: str, payload: Dict[str, Any], **kwargs) -> Any:
+    def execute(self, task_type: str, payload: dict[str, Any], **kwargs) -> Any:
         """Execute a task handler."""
         handler = self.get_handler(task_type)
         if not handler:

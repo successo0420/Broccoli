@@ -106,7 +106,7 @@ class HybridWorker(BaseWorker):
                     success = False
                 self._handle_hybrid_result(task, success)
             except Exception as e:
-                logger.error(f"Hybrid task {task.task_id} failed: {e}", exc_info=True)
+                logger.exception(f"Hybrid task {task.task_id} failed: {e}")
                 task.error = str(e)
                 self._handle_hybrid_result(task, False)
             finally:
