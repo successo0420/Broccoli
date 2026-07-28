@@ -1,7 +1,7 @@
 # video_scheduler/core/task_registry.py
 import logging
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class TaskRegistry:
         self._handlers[task_type] = handler
         logger.info(f"Manually registered handler for task type: {task_type}")
 
-    def get_handler(self, task_type: str) -> Optional[Callable]:
+    def get_handler(self, task_type: str) -> Callable | None:
         """Get the handler for a task type."""
         return self._handlers.get(task_type)
 

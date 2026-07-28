@@ -4,8 +4,8 @@ import signal
 import time
 from abc import ABC
 from collections.abc import Callable
-from datetime import datetime
-from typing import Any, Optional
+from datetime import datetime, timezone
+from typing import Any
 
 import redis
 
@@ -34,7 +34,7 @@ class BaseWorker(ABC):
         recover_on_startup: bool = True,
         recover_stalled_timeout: int = 3600,
         decode_responses: bool = True,
-        redis_config: Optional[dict[str, Any]] = None,
+        redis_config: dict[str, Any] | None = None,
     ):
         self.redis_url = redis_url
         self.decode_responses = decode_responses
@@ -285,7 +285,7 @@ class BaseWorker(ABC):
 
     def _update_task(self, task: Task) -> None:
         """Persist current task state to Redis."""
-        task.updated_at = datetime.now().isoformat()
+        task.updated_at = datetime.now(timezone.utc).isoformat()
         self._redis.hset(f"{self.task_prefix}:{task.task_id}", mapping=task.to_dict())
 
     # ============ Worker Loop ============

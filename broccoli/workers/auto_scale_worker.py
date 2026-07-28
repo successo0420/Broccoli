@@ -2,7 +2,6 @@
 import logging
 import threading
 import time
-from typing import Optional
 
 from broccoli.core.task.task_queue import TaskQueue
 from broccoli.workers.hybrid_worker import HybridWorker
@@ -59,7 +58,7 @@ class AutoScalingWorkerPool(WorkerPool):
             task_prefix=task_prefix,
         )
         self._last_scaling_action = 0.0
-        self._scaler_thread: Optional[threading.Thread] = None
+        self._scaler_thread: threading.Thread | None = None
         self._stop_scaler = threading.Event()
 
     def start(self):

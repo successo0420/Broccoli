@@ -36,7 +36,7 @@ import json
 import logging
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # Import Broccoli components
 from broccoli.core.redis_controller import RedisController
@@ -64,14 +64,14 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
-def _env_int(name: str, default: Optional[int]) -> Optional[int]:
+def _env_int(name: str, default: int | None) -> int | None:
     raw = os.getenv(name)
     if raw is None or raw == "":
         return default
     return int(raw)
 
 
-def _env_float(name: str, default: Optional[float]) -> Optional[float]:
+def _env_float(name: str, default: float | None) -> float | None:
     raw = os.getenv(name)
     if raw is None or raw == "":
         return default
@@ -107,7 +107,7 @@ def setup_logging(verbose: int):
     configure_logging(level)
 
 
-def print_table(headers: List[str], rows: List[List[Any]]):
+def print_table(headers: list[str], rows: list[list[Any]]):
     """Pretty-print a table with aligned columns."""
     # Avoid printing empty headers with no rows; this keeps CLI output clean
     # for scripts that depend on "no data" signaling.
@@ -190,7 +190,7 @@ def add_redis_tuning_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def redis_config_from_args(args) -> Dict[str, Any]:
+def redis_config_from_args(args) -> dict[str, Any]:
     return {
         "socket_timeout": args.redis_socket_timeout,
         "socket_connect_timeout": args.redis_socket_connect_timeout,

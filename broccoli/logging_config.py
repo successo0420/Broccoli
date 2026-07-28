@@ -1,6 +1,5 @@
 import logging
 import sys
-from typing import Optional
 
 
 def setup_logging(level: int = logging.INFO) -> None:
@@ -29,7 +28,7 @@ def setup_logging(level: int = logging.INFO) -> None:
     root.addHandler(handler)
 
 
-def get_logger(name: Optional[str] = None) -> logging.Logger:
+def get_logger(name: str | None = None) -> logging.Logger:
     """
     Get a logger with the given name (typically __name__).
 

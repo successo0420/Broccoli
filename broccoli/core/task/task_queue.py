@@ -2,7 +2,6 @@
 import json
 import logging
 import time
-from typing import List, Optional
 
 from broccoli.core.redis_controller import RedisController
 from broccoli.core.task.task import Task
@@ -48,7 +47,7 @@ class TaskQueue:
         queue_name: str = "tasks:queue",
         task_prefix: str = "task",
         decode_responses: bool = True,
-        redis_config: Optional[dict] = None,
+        redis_config: dict | None = None,
     ):
         self.redis_url = redis_url
         redis_config = redis_config or {}
@@ -253,7 +252,7 @@ class TaskQueue:
 
         return task.task_id
 
-    def pop(self) -> Optional[Task]:
+    def pop(self) -> Task | None:
         """
         Pop the highest-priority runnable task and move it to the processing set.
 
@@ -370,7 +369,7 @@ class TaskQueue:
         self.push(task, priority=priority)
         return True
 
-    def requeue(self, task_id: str, priority: Optional[int] = None) -> None:
+    def requeue(self, task_id: str, priority: int | None = None) -> None:
         """
         Move a task from the processing set back to the runnable queue (retry).
 
@@ -414,7 +413,7 @@ class TaskQueue:
     # Convenience helpers
     # ------------------------------------------------------------------
 
-    def get_task(self, task_id: str) -> Optional[Task]:
+    def get_task(self, task_id: str) -> Task | None:
         """Fetch task metadata by ID, or ``None`` if it doesn't exist."""
         task_data = self._redis.hgetall(f"{self.task_prefix}:{task_id}")
         if not task_data:
@@ -427,7 +426,7 @@ class TaskQueue:
     def is_empty(self) -> bool:
         return self._redis.zcard(self.queue_key) == 0
 
-    def pop_with_timeout(self, timeout: int = 1) -> Optional[Task]:
+    def pop_with_timeout(self, timeout: int = 1) -> Task | None:
         """Alias for ``pop()``; timeout is already handled internally."""
         return self.pop()
 
@@ -466,14 +465,14 @@ class TaskQueue:
         runnable, processing = pipe.execute()
         return runnable == 0 and processing == 0
 
-    def get_waiting_for(self, task_id: str) -> List[str]:
+    def get_waiting_for(self, task_id: str) -> list[str]:
         """Return the IDs of tasks currently blocked on ``task_id``."""
         return [
             tid.decode() if isinstance(tid, bytes) else tid
             for tid in self._redis.smembers(f"dependency:{task_id}")
         ]
 
-    def get_waiting_tasks(self) -> List[str]:
+    def get_waiting_tasks(self) -> list[str]:
         """Return all task IDs currently marked as waiting."""
         waiting = []
         for key in self._redis.scan_iter(match=f"{self.task_prefix}:*"):

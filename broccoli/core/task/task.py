@@ -5,8 +5,8 @@ import json
 import pickle
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Optional
+from datetime import datetime, timezone
+from typing import Any
 
 import cloudpickle
 
@@ -19,13 +19,13 @@ class Task:
     progress: float = 0.0
     retries: int = 0
     max_retries: int = 3
-    error: Optional[str] = None
-    secondary_error: Optional[str] = None
+    error: str | None = None
+    secondary_error: str | None = None
     payload: dict = field(default_factory=dict)
     result: Any = None
-    depends_on: Optional[list[str]] = None  # now a list of task IDs
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    updated_at: Optional[str] = None
+    depends_on: list[str] | None = None  # now a list of task IDs
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str | None = None
 
     @staticmethod
     def _normalize_redis_mapping(data: dict) -> dict:
@@ -112,6 +112,6 @@ class Task:
             payload=cls._loads_json(data.get("payload", "{}"), {}),
             result=cls._loads_result(data.get("result")),
             depends_on=cls._loads_json(data.get("depends_on", "[]"), []),
-            created_at=data.get("created_at") or datetime.now().isoformat(),
+            created_at=data.get("created_at") or datetime.now(timezone.utc).isoformat(),
             updated_at=data.get("updated_at") or None,
         )
