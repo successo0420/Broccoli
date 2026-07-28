@@ -98,7 +98,7 @@ class HybridWorker(BaseWorker):
                         loop.run_in_executor(self.thread_pool, self.process, task),
                         timeout=self.task_timeout,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.error(
                         f"Task {task.task_id} timed out after {self.task_timeout}s"
                     )

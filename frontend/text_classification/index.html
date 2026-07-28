@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Text Classification Model Trainer</title>
+    <!-- External libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="index.css" />
+</head>
+
+<body>
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+        <h2>🧠 ML Trainer</h2>
+        <div class="nav-item active" data-step="1">📂 Upload Data</div>
+        <div class="nav-item" data-step="2">⚙️ Preprocessing</div>
+        <div class="nav-item" data-step="3">🚀 Train Model</div>
+        <div class="nav-item" data-step="4">📊 Evaluate & Download</div>
+        <div class="nav-item" data-step="5">🧪 Test Model</div>
+        <div style="flex:1;"></div>
+        <div class="nav-item" id="reset-session-btn" style="margin-top:1rem; text-align:center;">🔄 Reset Session</div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content" id="main-content">
+        <!-- Step 1: Upload Data -->
+        <div class="step-container active" id="step-1">
+            <h2>📂 Step 1: Upload Your Data</h2>
+            <div class="alert alert-info">
+                Upload a CSV file with text data and labels. The file should contain at least one text column and one
+                label column.
+            </div>
+            <input type="file" id="csv-file" accept=".csv" />
+            <div id="upload-status" style="margin-top: 1rem;"></div>
+            <div id="data-preview" style="display:none; margin-top: 1.5rem;">
+                <h3>Data Preview</h3>
+                <div style="overflow-x: auto;" id="preview-table"></div>
+                <div class="row" style="margin-top: 1rem;">
+                    <div class="col">
+                        <h4>Columns</h4>
+                        <ul id="column-list"></ul>
+                    </div>
+                    <div class="col">
+                        <h4>Data Types & Missing Values</h4>
+                        <div id="dtype-info"></div>
+                    </div>
+                </div>
+                <h4>Dataset Statistics</h4>
+                <div id="stats-table"></div>
+            </div>
+        </div>
+
+        <!-- Step 2: Preprocessing -->
+        <div class="step-container" id="step-2">
+            <h2>⚙️ Step 2: Data Preprocessing</h2>
+            <div id="preproc-warning" class="alert alert-warning">Please upload data first!</div>
+            <div id="preproc-content" style="display:none;">
+                <div class="row">
+                    <div class="col">
+                        <label>Text Column</label>
+                        <select id="text-column-select"></select>
+                    </div>
+                    <div class="col">
+                        <label>Label Column</label>
+                        <select id="label-column-select"></select>
+                    </div>
+                </div>
+                <label>Columns to Drop</label>
+                <div id="drop-columns-container"></div>
+                <h3>Text Cleanup Options</h3>
+                <div class="row">
+                    <div class="col">
+                        <label><input type="checkbox" id="remove-urls" checked /> Remove URLs</label>
+                        <label><input type="checkbox" id="remove-html" checked /> Remove HTML tags</label>
+                    </div>
+                    <div class="col">
+                        <label><input type="checkbox" id="remove-punctuation" checked /> Remove punctuation</label>
+                        <label><input type="checkbox" id="remove-numbers" checked /> Remove numbers</label>
+                    </div>
+                    <div class="col">
+                        <label><input type="checkbox" id="remove-special-chars" checked /> Remove special chars</label>
+                        <label><input type="checkbox" id="lowercase" checked disabled /> Convert to lowercase</label>
+                    </div>
+                </div>
+                <h3>Data Cleanup</h3>
+                <div class="row">
+                    <div class="col">
+                        <label><input type="checkbox" id="remove-duplicates" checked /> Remove duplicate rows</label>
+                        <label><input type="checkbox" id="remove-nulls" checked /> Remove rows with missing
+                            values</label>
+                    </div>
+                    <div class="col">
+                        <label><input type="checkbox" id="shuffle-data" checked /> Shuffle data</label>
+                        <label>Random Seed <input type="number" id="random-seed" value="42" min="0" /></label>
+                    </div>
+                </div>
+                <button id="preview-preprocessing">🔍 Preview Preprocessing</button>
+                <div id="preproc-results" style="margin-top: 1.5rem; display:none;">
+                    <div class="alert alert-success" id="preproc-status"></div>
+                    <div class="row">
+                        <div class="col">
+                            <h4>Before Preprocessing</h4>
+                            <p id="before-text" style="background:#f3f4f6; padding:0.8rem; border-radius:0.4rem;"></p>
+                        </div>
+                        <div class="col">
+                            <h4>After Preprocessing</h4>
+                            <p id="after-text" style="background:#f3f4f6; padding:0.8rem; border-radius:0.4rem;"></p>
+                        </div>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="class-dist-chart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 3: Train Model -->
+        <div class="step-container" id="step-3">
+            <h2>🚀 Step 3: Train Your Model</h2>
+            <div id="train-warning" class="alert alert-warning">Please upload data and complete preprocessing first!
+            </div>
+            <div id="train-content" style="display:none;">
+                <div class="alert alert-info" id="dataset-ready-msg"></div>
+                <label>Select Model</label>
+                <select id="model-choice">
+                    <option>Logistic Regression</option>
+                    <option>Decision Tree</option>
+                    <option>Gradient Boosting</option>
+                    <option>Random Forest</option>
+                </select>
+                <h3>Training Parameters</h3>
+                <div class="row">
+                    <div class="col">
+                        <label>Test size (%)</label>
+                        <input type="range" id="test-size" min="10" max="50" value="25" step="5" />
+                        <span id="test-size-val">25%</span>
+                    </div>
+                    <div class="col">
+                        <label>Random state</label>
+                        <input type="number" id="train-random-state" value="42" min="0" />
+                    </div>
+                    <div class="col">
+                        <label>TF-IDF max features</label>
+                        <input type="number" id="max-features" value="5000" min="1000" max="50000" step="1000" />
+                    </div>
+                </div>
+                <h3>Model-Specific Parameters</h3>
+                <div id="model-params-container"></div>
+                <button id="train-model-btn" style="margin-top:1.5rem;">🚀 Train Model</button>
+                <div id="training-progress" style="margin-top:1rem;"></div>
+                <div id="training-results" style="display:none; margin-top:2rem;">
+                    <div class="alert alert-success">Model trained successfully!</div>
+                    <div class="metrics">
+                        <div class="metric-box">
+                            <div class="value" id="train-acc">0.00</div>
+                            <div class="label">Training Accuracy</div>
+                        </div>
+                        <div class="metric-box">
+                            <div class="value" id="test-acc">0.00</div>
+                            <div class="label">Testing Accuracy</div>
+                        </div>
+                    </div>
+                    <h3>Classification Report</h3>
+                    <pre id="class-report"></pre>
+                    <h3>Confusion Matrix</h3>
+                    <div class="chart-container">
+                        <canvas id="confusion-matrix-chart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 4: Evaluate & Download -->
+        <div class="step-container" id="step-4">
+            <h2>📊 Step 4: Evaluate & Download Model</h2>
+            <div id="eval-warning" class="alert alert-warning">Please train a model first!</div>
+            <div id="eval-content" style="display:none;">
+                <div class="alert alert-success" id="eval-model-name"></div>
+                <div class="metrics">
+                    <div class="metric-box">
+                        <div class="value" id="eval-train-acc">0.00</div>
+                        <div class="label">Training Accuracy</div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="value" id="eval-test-acc">0.00</div>
+                        <div class="label">Testing Accuracy</div>
+                    </div>
+                </div>
+                <h3>Detailed Classification Report</h3>
+                <pre id="eval-class-report"></pre>
+                <h3>Confusion Matrix</h3>
+                <div class="chart-container">
+                    <canvas id="eval-confusion-chart"></canvas>
+                </div>
+                <h3>Download Trained Model</h3>
+                <div class="alert alert-info">Download your trained model and vectorizer for production use.</div>
+                <div class="flex-buttons">
+                    <button id="download-model" disabled>📥 Download Model (.pkl)</button>
+                    <button id="download-vectorizer" disabled>📥 Download Vectorizer (.pkl)</button>
+                </div>
+                <p style="color: var(--text-secondary); font-size:0.85rem;">Downloads will be available once connected
+                    to a backend.</p>
+                <h3>Usage Example</h3>
+                <pre id="usage-code">
+import pickle
+with open('model.pkl', 'rb') as f: model = pickle.load(f)
+with open('tfidf_vectorizer.pkl', 'rb') as f: vectorizer = pickle.load(f)
+new_text = ["Your text here"]
+prediction = model.predict(vectorizer.transform(new_text))
+print(f"Prediction: {prediction[0]}")
+                </pre>
+            </div>
+        </div>
+
+        <!-- Step 5: Test Model -->
+        <div class="step-container" id="step-5">
+            <h2>🧪 Step 5: Test Your Model</h2>
+            <div class="alert alert-info">Upload your trained `.pkl` Model and Vectorizer to make predictions.</div>
+            <div class="row">
+                <div class="col">
+                    <label>Upload Model (.pkl)</label>
+                    <input type="file" id="test-model-file" accept=".pkl" />
+                </div>
+                <div class="col">
+                    <label>Upload Vectorizer (.pkl)</label>
+                    <input type="file" id="test-vectorizer-file" accept=".pkl" />
+                </div>
+            </div>
+            <div id="test-load-status"></div>
+            <textarea id="test-input-text" placeholder="Enter text to classify..." style="margin-top:1rem;"></textarea>
+            <button id="predict-btn" style="margin-top:1rem;">🔮 Make Prediction</button>
+            <div id="prediction-result" style="margin-top:1rem;"></div>
+            <p style="color: var(--text-secondary); margin-top:1rem; font-size:0.9rem;">Note: In a full implementation,
+                model inference runs on the backend.</p>
+        </div>
+    </main>
+
+    <script src="index.js"></script>
+</body>
+
+
+</html>
