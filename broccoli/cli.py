@@ -291,6 +291,12 @@ def cmd_worker_start(args):
             **worker_kwargs,
         )
         pool.start()
+    else:
+        worker = worker_class(
+            redis_url=args.redis_url,
+            **worker_kwargs,
+        )
+        worker.start()
 
 
 # ============ Queue commands ============
