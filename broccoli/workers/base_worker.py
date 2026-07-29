@@ -351,19 +351,22 @@ class BaseWorker(ABC):
 
     def _register_signal_handlers(self):
         """
-        Register SIGINT/SIGTERM to call ``_stop_handler``.
+        Register SIGTERM to call ``_stop_handler``.
 
-        ``signal.signal`` only works from the main thread — when a worker is
-        run inside ``WorkerPool`` it lives on a background daemon thread, so
-        we skip registration there and rely on ``WorkerPool`` catching the
-        signal itself and calling ``stop()`` on each worker instead.
+        We intentionally do not override SIGINT. Leaving SIGINT at Python's
+        default behavior allows Ctrl+C to raise ``KeyboardInterrupt`` and
+        promptly interrupt long-running worker tasks.
+
+        ``signal.signal`` only works from the main thread — when a worker is run
+        inside ``WorkerPool`` it lives on a background daemon thread, so we skip
+        registration there and rely on ``WorkerPool`` catching signals and
+        calling ``stop()`` on each worker.
         """
         import threading
 
         if threading.current_thread() is not threading.main_thread():
             return
         try:
-            signal.signal(signal.SIGINT, self._stop_handler)
             signal.signal(signal.SIGTERM, self._stop_handler)
         except (ValueError, OSError) as e:
             logger.debug(f"Could not register signal handlers: {e}")
