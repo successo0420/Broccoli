@@ -419,6 +419,9 @@
         trainingResults = null;
         saveState();
         document.getElementById("training-results").style.display = "none";
+        console.log("Final task ID:", finalTaskId);
+        console.log("Training task IDs:", trainingTaskIds);
+        console.log("Run ID:", trainingRunId);
         pollTrainingRun({
           runId: trainingRunId,
           taskIds: trainingTaskIds,

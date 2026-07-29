@@ -28,7 +28,7 @@ class BaseWorker(ABC):
     def __init__(
         self,
         redis_url: str = "redis://localhost:6379",
-        worker_id: str = None,
+        worker_id: str | None = None,
         queue_name: str = "tasks:queue",
         task_prefix: str = "task",
         recover_on_startup: bool = True,
@@ -199,9 +199,7 @@ class BaseWorker(ABC):
                     mapping=dead_copy,
                 )
             except Exception:
-                logger.exception(
-                    f"Failed to record {task.task_id} in dead-letter set"
-                )
+                logger.exception(f"Failed to record {task.task_id} in dead-letter set")
         self.result.store_task(task)
         logger.info(f"Task {task.task_id} {task.status} — result stored")
         self._redis.delete(f"{self.task_prefix}:{task.task_id}")

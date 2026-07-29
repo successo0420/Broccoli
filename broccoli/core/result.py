@@ -15,7 +15,7 @@ class ResultBackend:
         self,
         redis_url: str = "redis://localhost:6379/0",
         decode_responses: bool = True,
-        redis_config: dict = None,
+        redis_config: dict | None = None,
     ):
         redis_config = redis_config or {}
         self._redis = RedisController(

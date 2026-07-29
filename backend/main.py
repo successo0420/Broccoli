@@ -2,6 +2,7 @@
 import io
 import re
 import uuid
+from datetime import datetime
 
 import cloudpickle
 import handlers as broccoli_handlers
@@ -52,105 +53,10 @@ NUMBER_RE = re.compile(r"\d+")
 SPECIAL_RE = re.compile(r"[^a-zA-Z0-9\s]")
 
 
-def clean_text(text, cfg: dict) -> str:
-    if text is None or (isinstance(text, float) and np.isnan(text)):
-        return ""
-    text = str(text)
-
-    if cfg.get("remove_html", True):
-        text = HTML_RE.sub(" ", text)
-    if cfg.get("remove_urls", True):
-        text = URL_RE.sub(" ", text)
-
-    text = text.lower()
-
-    if cfg.get("remove_punctuation", True):
-        text = PUNCT_RE.sub(" ", text)
-    if cfg.get("remove_numbers", True):
-        text = NUMBER_RE.sub(" ", text)
-    if cfg.get("remove_special_chars", True):
-        text = SPECIAL_RE.sub(" ", text)
-
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
 # ----------------------------------------------------------------------
 # Shared helpers -- always read through to Redis so that neither a page
 # reload nor a server restart loses track of data that is still cached.
 # ----------------------------------------------------------------------
-def _dataset_summary(dataset_id: str, df: pd.DataFrame) -> dict:
-    preview = df.head(10).where(pd.notnull(df.head(10)), None).to_dict(orient="records")
-    columns = df.columns.tolist()
-    types = df.dtypes.astype(str).to_dict()
-    missing = df.isnull().sum().to_dict()
-    numeric_df = df.select_dtypes(include=[np.number])
-    stats = numeric_df.describe().to_dict() if not numeric_df.empty else {}
-    return {
-        "dataset_id": dataset_id,
-        "preview": preview,
-        "columns": columns,
-        "types": types,
-        "missing": missing,
-        "stats": stats,
-    }
-
-
-def _get_dataset_df(dataset_id: str) -> pd.DataFrame:
-    raw = redis_client.get(f"dataset:{dataset_id}")
-    if raw is None:
-        raise HTTPException(status_code=404, detail="Dataset not found or expired.")
-    df = cloudpickle.loads(raw)
-    DATASETS[dataset_id] = {"row_count": len(df), "columns": df.columns.tolist()}
-    return df
-
-
-def _get_preprocessed_bundle(preprocessed_id: str) -> dict:
-    raw = redis_client.get(f"preprocessed:{preprocessed_id}")
-    if raw is None:
-        raise HTTPException(
-            status_code=404, detail="Preprocessed dataset not found or expired."
-        )
-    bundle = cloudpickle.loads(raw)
-    df = bundle["df"]
-    label_column = bundle["label_column"]
-    class_distribution = df[label_column].value_counts().to_dict()
-    class_distribution = {str(k): int(v) for k, v in class_distribution.items()}
-    PREPROCESSED[preprocessed_id] = {
-        "row_count": len(df),
-        "class_distribution": class_distribution,
-    }
-    return bundle
-
-
-def _load_run_manifest(run_id: str) -> dict | None:
-    raw = redis_client.get(f"run:{run_id}")
-    return cloudpickle.loads(raw) if raw is not None else None
-
-
-def _save_run_manifest(run_id: str, manifest: dict) -> None:
-    redis_client.setex(f"run:{run_id}", REDIS_TTL_SECONDS, cloudpickle.dumps(manifest))
-
-
-def _load_run_result(run_id: str) -> dict | None:
-    raw = redis_client.get(f"run_result:{run_id}")
-    return cloudpickle.loads(raw) if raw is not None else None
-
-
-def _task_snapshot(task_id: str) -> dict:
-    queue = TaskQueue(redis_url="redis://localhost:6379", decode_responses=True)
-    task = queue.get_task(task_id)
-    if task is None:
-        return {"task_id": task_id, "status": "pending", "error": None}
-
-    if isinstance(task, dict):
-        status = task.get("status", "pending")
-        error = task.get("error")
-    else:
-        status = getattr(task, "status", "pending")
-        error = getattr(task, "error", None)
-
-    return {"task_id": task_id, "status": str(status).lower(), "error": error}
 
 
 # ----------------------------------------------------------------------
@@ -170,7 +76,9 @@ async def upload_file(file: UploadFile = File(...)):
 
     dataset_id = uuid.uuid4().hex
     # Store in Redis with TTL
-    redis_client.setex(f"dataset:{dataset_id}", REDIS_TTL_SECONDS, cloudpickle.dumps(df))
+    redis_client.setex(
+        f"dataset:{dataset_id}", REDIS_TTL_SECONDS, cloudpickle.dumps(df)
+    )
     # Keep metadata
     DATASETS[dataset_id] = {"row_count": len(df), "columns": df.columns.tolist()}
 
@@ -353,7 +261,7 @@ async def train_model(payload: dict = Body(...)):
         "training_tasks": candidates,
         "final_task_id": final_task_id,
         "task_ids": all_task_ids,
-        "created_at": pd.Timestamp.utcnow().isoformat(),
+        "created_at": pd.Timestamp.now().isoformat(),
     }
     _save_run_manifest(run_id, manifest)
 
@@ -560,3 +468,103 @@ async def predict(payload: dict = Body(...)):
 # Serve frontend static files
 # ----------------------------------------------------------------------
 app.mount("/", StaticFiles(directory="../frontend", html=True), name="frontend")
+
+
+def _dataset_summary(dataset_id: str, df: pd.DataFrame) -> dict:
+    preview = df.head(10).where(pd.notnull(df.head(10)), None).to_dict(orient="records")
+    columns = df.columns.tolist()
+    types = df.dtypes.astype(str).to_dict()
+    missing = df.isnull().sum().to_dict()
+    numeric_df = df.select_dtypes(include=[np.number])
+    stats = numeric_df.describe().to_dict() if not numeric_df.empty else {}
+    return {
+        "dataset_id": dataset_id,
+        "preview": preview,
+        "columns": columns,
+        "types": types,
+        "missing": missing,
+        "stats": stats,
+    }
+
+
+def _get_dataset_df(dataset_id: str) -> pd.DataFrame:
+    raw = redis_client.get(f"dataset:{dataset_id}")
+    if raw is None:
+        raise HTTPException(status_code=404, detail="Dataset not found or expired.")
+    df = cloudpickle.loads(raw)
+    DATASETS[dataset_id] = {"row_count": len(df), "columns": df.columns.tolist()}
+    return df
+
+
+def _get_preprocessed_bundle(preprocessed_id: str) -> dict:
+    raw = redis_client.get(f"preprocessed:{preprocessed_id}")
+    if raw is None:
+        raise HTTPException(
+            status_code=404, detail="Preprocessed dataset not found or expired."
+        )
+    bundle = cloudpickle.loads(raw)
+    df = bundle["df"]
+    label_column = bundle["label_column"]
+    class_distribution = df[label_column].value_counts().to_dict()
+    class_distribution = {str(k): int(v) for k, v in class_distribution.items()}
+    PREPROCESSED[preprocessed_id] = {
+        "row_count": len(df),
+        "class_distribution": class_distribution,
+    }
+    return bundle
+
+
+def _load_run_manifest(run_id: str) -> dict | None:
+    raw = redis_client.get(f"run:{run_id}")
+    return cloudpickle.loads(raw) if raw is not None else None
+
+
+def _save_run_manifest(run_id: str, manifest: dict) -> None:
+    redis_client.setex(f"run:{run_id}", REDIS_TTL_SECONDS, cloudpickle.dumps(manifest))
+
+
+def _load_run_result(run_id: str) -> dict | None:
+    raw = redis_client.get(f"result:{run_id}")
+    return cloudpickle.loads(raw) if raw is not None else None
+
+
+def _task_snapshot(task_id: str) -> dict:
+    queue = TaskQueue(redis_url="redis://localhost:6379", decode_responses=True)
+    task = queue.get_task(task_id)
+    if task is None:
+        task = result_backend.get_task_result(task_id)
+        if task is None:
+            return {"task_id": task_id, "status": "pending", "error": None}
+
+    if isinstance(task, dict):
+        status = task.get("status", "pending")
+        error = task.get("error")
+    else:
+        status = getattr(task, "status", "pending")
+        error = getattr(task, "error", None)
+    print(f"Task snapshot for {task_id}: status={status}, error={error}")
+
+    return {"task_id": task_id, "status": str(status).lower(), "error": error}
+
+
+def clean_text(text, cfg: dict) -> str:
+    if text is None or (isinstance(text, float) and np.isnan(text)):
+        return ""
+    text = str(text)
+
+    if cfg.get("remove_html", True):
+        text = HTML_RE.sub(" ", text)
+    if cfg.get("remove_urls", True):
+        text = URL_RE.sub(" ", text)
+
+    text = text.lower()
+
+    if cfg.get("remove_punctuation", True):
+        text = PUNCT_RE.sub(" ", text)
+    if cfg.get("remove_numbers", True):
+        text = NUMBER_RE.sub(" ", text)
+    if cfg.get("remove_special_chars", True):
+        text = SPECIAL_RE.sub(" ", text)
+
+    text = re.sub(r"\s+", " ", text).strip()
+    return text

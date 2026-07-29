@@ -28,7 +28,7 @@ class HybridWorker(BaseWorker):
     def __init__(
         self,
         redis_url: str = "redis://localhost:6379",
-        worker_id: str = None,
+        worker_id: str | None = None,
         queue_name: str = "tasks:queue",
         task_prefix: str = "task",
         thread_workers: int = 4,
@@ -37,7 +37,7 @@ class HybridWorker(BaseWorker):
         recover_on_startup: bool = True,
         recover_stalled_timeout: int = 3600,
         decode_responses: bool = True,
-        redis_config: dict = None,
+        redis_config: dict | None = None,
     ):
         super().__init__(
             redis_url=redis_url,
