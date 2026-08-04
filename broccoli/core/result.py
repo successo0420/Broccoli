@@ -37,6 +37,8 @@ class ResultBackend:
         data = self._redis.get(key)
         if isinstance(data, bytes):
             return data.decode()
+        if isinstance(data, str):
+            return json.loads(data)
         if data:
             return data
         return None

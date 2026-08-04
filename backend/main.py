@@ -535,13 +535,13 @@ def _task_snapshot(task_id: str) -> dict:
         task = result_backend.get_task_result(task_id)
         if task is None:
             return {"task_id": task_id, "status": "pending", "error": None}
-
+    print(isinstance(task, dict))
     if isinstance(task, dict):
-        status = task.get("status", "pending")
+        status = task.get("status", "unknown")
         error = task.get("error")
     else:
-        status = getattr(task, "status", "pending")
-        error = getattr(task, "error", None)
+        status = task.status
+        error = task.error
     print(f"Task snapshot for {task_id}: status={status}, error={error}")
 
     return {"task_id": task_id, "status": str(status).lower(), "error": error}
